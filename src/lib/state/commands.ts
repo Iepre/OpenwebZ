@@ -18,8 +18,11 @@ import { createNote } from '#lib/core/music';
 import { downloadBlob, safeFilename } from '#lib/io/download';
 import { parseMidi, serializeMidi, type MidiFile } from '#lib/io/midi';
 import { parseProject, serializeProject } from '#lib/io/project-file';
+import { parseSvp, serializeSvp } from '#lib/io/svp';
+import { parseCevioOrVoiSona, serializeCcs, serializeTssln } from '#lib/io/cevio';
 import { parseUst, serializeUst } from '#lib/io/ust';
 import { parseUstx, serializeUstx } from '#lib/io/ustx';
+import { parseVpr, serializeVpr } from '#lib/io/vpr';
 import { parseVsqx } from '#lib/io/vsqx';
 import { createTrack } from '#lib/core/music';
 import { decodeText } from '#lib/io/text';
@@ -264,6 +267,164 @@ export const file = {
 		ui.toast(`Imported ${notes.length} notes from VSQX (${tracks.length} track(s)).`, 'success');
 	},
 
+	importSvp: guard(async () => {
+		const [f] = await pickFiles('.svp');
+		if (f) await file.openSvp(f);
+	}),
+
+	openSvp: async (f: File) => {
+		const svp = parseSvp(await readBytes(f));
+		if (!svp.notes.length) throw new Error('The SVP file contains no notes.');
+		if (!confirmDiscard()) return;
+		playback.stop();
+		loadImported({
+			name: svp.name || f.name.replace(/\.svp$/i, ''),
+			notes: svp.notes,
+			tracks: svp.tracks,
+			tempos: svp.tempos,
+			timeSignature: svp.timeSignature,
+			voicebank: svp.voicebank
+		});
+		ui.toast(
+			`Imported ${svp.notes.length} notes from SVP (${svp.tracks.length} track(s)).`,
+			'success'
+		);
+		svp.warnings.forEach((w) => ui.toast(w));
+	},
+
+	exportSvp: guard(() => {
+		if (!project.notes.length) throw new Error('Nothing to export: add some notes first.');
+		const { text, warnings } = serializeSvp({
+			name: project.name,
+			voicebank: project.voicebankName,
+			notes: project.notes,
+			tracks: project.tracks,
+			tempos: project.tempos,
+			timeSignature: project.timeSignature
+		});
+		downloadBlob(text, `${safeFilename(project.name)}.svp`, 'application/json;charset=utf-8');
+		ui.toast('SVP exported for Synthesizer V.', 'success');
+		warnings.forEach((w) => ui.toast(w));
+	}),
+
+	importTssln: guard(async () => {
+		const [f] = await pickFiles('.tssln,.xml');
+		if (f) await file.openTssln(f);
+	}),
+
+	openTssln: async (f: File) => {
+		const res = await parseCevioOrVoiSona(await readBytes(f), 'tssln');
+		if (!res.notes.length) throw new Error('The TSSLN file contains no notes.');
+		if (!confirmDiscard()) return;
+		playback.stop();
+		loadImported({
+			name: res.name || f.name.replace(/\.tssln$/i, ''),
+			notes: res.notes,
+			tracks: res.tracks,
+			tempos: res.tempos,
+			timeSignature: res.timeSignature,
+			voicebank: res.voicebank
+		});
+		ui.toast(
+			`Imported ${res.notes.length} notes from TSSLN (${res.tracks.length} track(s)).`,
+			'success'
+		);
+		res.warnings.forEach((w) => ui.toast(w));
+	},
+
+	exportTssln: guard(() => {
+		if (!project.notes.length) throw new Error('Nothing to export: add some notes first.');
+		const { text, warnings } = serializeTssln({
+			name: project.name,
+			voicebank: project.voicebankName,
+			notes: project.notes,
+			tracks: project.tracks,
+			tempos: project.tempos,
+			timeSignature: project.timeSignature
+		});
+		downloadBlob(text, `${safeFilename(project.name)}.tssln`, 'application/xml;charset=utf-8');
+		ui.toast('TSSLN exported for VoiSona.', 'success');
+		warnings.forEach((w) => ui.toast(w));
+	}),
+
+	importCcs: guard(async () => {
+		const [f] = await pickFiles('.ccs,.ccst,.xml');
+		if (f) await file.openCcs(f);
+	}),
+
+	openCcs: async (f: File) => {
+		const res = await parseCevioOrVoiSona(await readBytes(f), 'ccs');
+		if (!res.notes.length) throw new Error('The CCS file contains no notes.');
+		if (!confirmDiscard()) return;
+		playback.stop();
+		loadImported({
+			name: res.name || f.name.replace(/\.(ccs|ccst)$/i, ''),
+			notes: res.notes,
+			tracks: res.tracks,
+			tempos: res.tempos,
+			timeSignature: res.timeSignature,
+			voicebank: res.voicebank
+		});
+		ui.toast(
+			`Imported ${res.notes.length} notes from CCS (${res.tracks.length} track(s)).`,
+			'success'
+		);
+		res.warnings.forEach((w) => ui.toast(w));
+	},
+
+	exportCcs: guard(() => {
+		if (!project.notes.length) throw new Error('Nothing to export: add some notes first.');
+		const { text, warnings } = serializeCcs({
+			name: project.name,
+			voicebank: project.voicebankName,
+			notes: project.notes,
+			tracks: project.tracks,
+			tempos: project.tempos,
+			timeSignature: project.timeSignature
+		});
+		downloadBlob(text, `${safeFilename(project.name)}.ccs`, 'application/xml;charset=utf-8');
+		ui.toast('CCS exported for CeVIO.', 'success');
+		warnings.forEach((w) => ui.toast(w));
+	}),
+
+	importVpr: guard(async () => {
+		const [f] = await pickFiles('.vpr');
+		if (f) await file.openVpr(f);
+	}),
+
+	openVpr: async (f: File) => {
+		const vpr = await parseVpr(await readBytes(f), f.name.replace(/\.vpr$/i, ''));
+		if (!vpr.notes.length) throw new Error('The VPR file contains no notes.');
+		if (!confirmDiscard()) return;
+		playback.stop();
+		loadImported({
+			name: vpr.name,
+			notes: vpr.notes,
+			tracks: vpr.tracks,
+			tempos: vpr.tempos,
+			timeSignature: vpr.timeSignature
+		});
+		ui.toast(
+			`Imported ${vpr.notes.length} notes from VPR (${vpr.tracks.length} track(s)).`,
+			'success'
+		);
+		vpr.warnings.forEach((w) => ui.toast(w));
+	},
+
+	exportVpr: guard(async () => {
+		if (!project.notes.length) throw new Error('Nothing to export: add some notes first.');
+		const { bytes, warnings } = await serializeVpr({
+			name: project.name,
+			notes: project.notes,
+			tracks: project.tracks,
+			tempos: project.tempos,
+			timeSignature: project.timeSignature
+		});
+		downloadBlob(bytes, `${safeFilename(project.name)}.vpr`, 'application/octet-stream');
+		ui.toast('VPR exported for VOCALOID5+.', 'success');
+		warnings.forEach((w) => ui.toast(w));
+	}),
+
 	exportMidi: guard(() => {
 		if (!project.notes.length) throw new Error('Nothing to export: add some notes first.');
 		downloadBlob(
@@ -318,6 +479,34 @@ formats
 		import: { label: 'Import MIDI…', action: file.importMidi },
 		export: { label: 'Export MIDI', action: file.exportMidi },
 		openFile: file.openMidi
+	})
+	.register({
+		id: 'svp',
+		extensions: ['.svp'],
+		import: { label: 'Import SVP (SynthV)…', action: file.importSvp },
+		export: { label: 'Export SVP (SynthV)', action: file.exportSvp },
+		openFile: file.openSvp
+	})
+	.register({
+		id: 'tssln',
+		extensions: ['.tssln'],
+		import: { label: 'Import TSSLN (VoiSona)…', action: file.importTssln },
+		export: { label: 'Export TSSLN (VoiSona)', action: file.exportTssln },
+		openFile: file.openTssln
+	})
+	.register({
+		id: 'ccs',
+		extensions: ['.ccs', '.ccst'],
+		import: { label: 'Import CCS (CeVIO)…', action: file.importCcs },
+		export: { label: 'Export CCS (CeVIO)', action: file.exportCcs },
+		openFile: file.openCcs
+	})
+	.register({
+		id: 'vpr',
+		extensions: ['.vpr'],
+		import: { label: 'Import VPR (VOCALOID5+)…', action: file.importVpr },
+		export: { label: 'Export VPR (VOCALOID5+)', action: file.exportVpr },
+		openFile: file.openVpr
 	})
 	.register({
 		id: 'vsqx',

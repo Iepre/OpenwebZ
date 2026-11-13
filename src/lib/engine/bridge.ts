@@ -1,5 +1,5 @@
-import WSynthFactory, { type WSynthModule } from './wasm/w-synth.js';
-import wasmUrl from './wasm/w-synth.wasm?url';
+import type { WSynthModule, WSynthModuleOptions } from './wasm/w-synth';
+import { TS_ANALYSIS_VERSION, TsEngineInstance, analyzeWavBytes } from './ts-engine';
 
 export type AnalysisMode = 0 | 1; // 0 = accurate (Harvest), 1 = fast (DIO)
 
@@ -42,17 +42,32 @@ export interface RenderReport {
 	spans?: { index: number; start: number; end: number; fade_in: number; fade_out: number }[];
 }
 
+const jsModules = import.meta.glob('./wasm/w-synth.js');
+const wasmFiles = import.meta.glob('./wasm/w-synth.wasm', {
+	query: '?url',
+	import: 'default'
+});
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * Typed, memory-safe wrapper over the raw C exports of the engine.
+ * Typed wrapper over the C exports of the WASM engine or the built-in pure-TypeScript
+ * UTAU synthesis fallback when WebAssembly artifacts are not present.
  * Must only be used inside a worker: calls block until they finish.
  */
 export class WasmBridge {
-	private readonly fn: Record<string, (...args: number[]) => number>;
+	private readonly fn: Record<string, (...args: number[]) => number> | null;
+	private readonly m: WSynthModule | null;
+	private readonly tsInstances = new Map<number, TsEngineInstance>();
+	private nextTsId = 1;
 
-	private constructor(private readonly m: WSynthModule) {
+	private constructor(m: WSynthModule | null) {
+		this.m = m;
+		if (!m) {
+			this.fn = null;
+			return;
+		}
 		const f = (name: string, ret: 'number' | 'boolean' | null, args: number) =>
 			m.cwrap(name, ret, Array<'number'>(args).fill('number'));
 		this.fn = {
@@ -83,34 +98,53 @@ export class WasmBridge {
 	}
 
 	static async create(module?: WebAssembly.Module): Promise<WasmBridge> {
-		const instantiateWasm = (
-			imports: WebAssembly.Imports,
-			receive: (i: WebAssembly.Instance, m: WebAssembly.Module) => void
-		) => {
-			(async () => {
-				const mod = module ?? (await WebAssembly.compileStreaming(fetch(wasmUrl)));
-				receive(await WebAssembly.instantiate(mod, imports), mod);
-			})().catch((e) => console.error('[engine] failed to instantiate wasm', e));
-			return {};
-		};
-		const m = await WSynthFactory({ instantiateWasm, print: () => {}, printErr: console.warn });
-		return new WasmBridge(m);
+		const loadFactory = jsModules['./wasm/w-synth.js'];
+		const loadWasm = wasmFiles['./wasm/w-synth.wasm'];
+		if (!loadFactory || !loadWasm) {
+			return new WasmBridge(null);
+		}
+		try {
+			const factoryMod = (await loadFactory()) as {
+				default: (opts?: WSynthModuleOptions) => Promise<WSynthModule>;
+			};
+			const wasmUrl = (await loadWasm()) as string;
+			const instantiateWasm = (
+				imports: WebAssembly.Imports,
+				receive: (i: WebAssembly.Instance, m: WebAssembly.Module) => void
+			) => {
+				(async () => {
+					const mod = module ?? (await WebAssembly.compileStreaming(fetch(wasmUrl)));
+					receive(await WebAssembly.instantiate(mod, imports), mod);
+				})().catch((e) => console.error('[engine] failed to instantiate wasm', e));
+				return {};
+			};
+			const m = await factoryMod.default({
+				instantiateWasm,
+				print: () => {},
+				printErr: console.warn
+			});
+			return new WasmBridge(m);
+		} catch (e) {
+			console.warn('[engine] WASM unavailable, falling back to TypeScript synthesizer.', e);
+			return new WasmBridge(null);
+		}
 	}
 
 	get analysisVersion(): number {
-		return this.fn.version();
+		return this.fn ? this.fn.version() : TS_ANALYSIS_VERSION;
 	}
 
 	// ---- memory helpers -------------------------------------------------
 
 	private withBytes<T>(data: Uint8Array, fn: (ptr: number, len: number) => T): T {
-		const ptr = this.m._malloc(Math.max(1, data.length));
+		const m = this.m!;
+		const ptr = m._malloc(Math.max(1, data.length));
 		if (!ptr) throw new Error('Out of memory in the audio engine.');
 		try {
-			this.m.HEAPU8.set(data, ptr);
+			m.HEAPU8.set(data, ptr);
 			return fn(ptr, data.length);
 		} finally {
-			this.m._free(ptr);
+			m._free(ptr);
 		}
 	}
 
@@ -121,12 +155,13 @@ export class WasmBridge {
 	/** Copies a returned WasmBuffer out of the heap and frees it. */
 	private take(bufferPtr: number): Uint8Array | null {
 		if (!bufferPtr) return null;
+		const m = this.m!;
 		try {
-			const ptr = this.m.getValue(bufferPtr, 'i32') >>> 0;
-			const len = this.m.getValue(bufferPtr + 4, 'i32') >>> 0;
-			return this.m.HEAPU8.slice(ptr, ptr + len);
+			const ptr = m.getValue(bufferPtr, 'i32') >>> 0;
+			const len = m.getValue(bufferPtr + 4, 'i32') >>> 0;
+			return m.HEAPU8.slice(ptr, ptr + len);
 		} finally {
-			this.fn.free(bufferPtr);
+			this.fn!.free(bufferPtr);
 		}
 	}
 
@@ -135,14 +170,26 @@ export class WasmBridge {
 		return bytes ? (JSON.parse(decoder.decode(bytes)) as T) : null;
 	}
 
+	private ts(e: number): TsEngineInstance {
+		const inst = this.tsInstances.get(e);
+		if (!inst) throw new Error('Invalid synthesis engine handle.');
+		return inst;
+	}
+
 	// ---- stateless analysis ----------------------------------------------
 
 	/** Returns serialized features of a WAV file, or null if it cannot be analyzed. */
 	analyze(wav: Uint8Array, mode: AnalysisMode): Uint8Array | null {
-		return this.take(this.withBytes(wav, (p, l) => this.fn.analyze(p, l, mode)));
+		if (!this.fn) return analyzeWavBytes(wav, mode);
+		return this.take(this.withBytes(wav, (p, l) => this.fn!.analyze(p, l, mode)));
 	}
 
 	createEngine(): EngineHandle {
+		if (!this.fn) {
+			const id = this.nextTsId++;
+			this.tsInstances.set(id, new TsEngineInstance());
+			return new EngineHandle(this, id);
+		}
 		const ptr = this.fn.create();
 		if (!ptr) throw new Error('Failed to create the synthesis engine.');
 		return new EngineHandle(this, ptr);
@@ -150,42 +197,76 @@ export class WasmBridge {
 
 	/** @internal */
 	call = {
-		reset: (e: number) => this.fn.reset(e),
-		destroy: (e: number) => this.fn.destroy(e),
-		loadOto: (e: number, d: Uint8Array) => !!this.withBytes(d, (p, l) => this.fn.loadOto(e, p, l)),
+		reset: (e: number) => {
+			if (!this.fn) this.ts(e).reset();
+			else this.fn.reset(e);
+		},
+		destroy: (e: number) => {
+			if (!this.fn) this.tsInstances.delete(e);
+			else this.fn.destroy(e);
+		},
+		loadOto: (e: number, d: Uint8Array) =>
+			!this.fn ? this.ts(e).loadOto(d) : !!this.withBytes(d, (p, l) => this.fn!.loadOto(e, p, l)),
 		loadPrefix: (e: number, d: Uint8Array) =>
-			!!this.withBytes(d, (p, l) => this.fn.loadPrefix(e, p, l)),
+			!this.fn
+				? this.ts(e).loadPrefixMap(d)
+				: !!this.withBytes(d, (p, l) => this.fn!.loadPrefix(e, p, l)),
 		otoEntries: (e: number) =>
-			this.takeJson<{ entries: [string, string][] }>(this.fn.otoJson(e))?.entries ?? [],
+			!this.fn
+				? this.ts(e).otoEntries()
+				: (this.takeJson<{ entries: [string, string][] }>(this.fn.otoJson(e))?.entries ?? []),
 		required: (e: number, notesJson: string) =>
-			this.takeJson<{ files: string[]; missing: number[] }>(
-				this.withText(notesJson, (p, l) => this.fn.required(e, p, l))
-			),
+			!this.fn
+				? this.ts(e).requiredFiles(JSON.parse(notesJson) as EngineNote[])
+				: this.takeJson<{ files: string[]; missing: number[] }>(
+						this.withText(notesJson, (p, l) => this.fn!.required(e, p, l))
+					),
 		hasFeatures: (e: number, name: string) =>
-			!!this.withText(name, (p, l) => this.fn.hasFeatures(e, p, l)),
+			!this.fn
+				? this.ts(e).hasFeatures(name)
+				: !!this.withText(name, (p, l) => this.fn!.hasFeatures(e, p, l)),
 		cacheFeatures: (e: number, name: string, data: Uint8Array) =>
-			!!this.withText(name, (np, nl) =>
-				this.withBytes(data, (dp, dl) => this.fn.cacheFeatures(e, np, nl, dp, dl))
-			),
-		begin: (e: number, json: string) => this.withText(json, (p, l) => this.fn.begin(e, p, l)),
-		step: (e: number, n: number) => this.fn.step(e, n),
+			!this.fn
+				? this.ts(e).cacheFeatures(name, data)
+				: !!this.withText(name, (np, nl) =>
+						this.withBytes(data, (dp, dl) => this.fn!.cacheFeatures(e, np, nl, dp, dl))
+					),
+		begin: (e: number, json: string) => {
+			if (!this.fn) {
+				const parsed = JSON.parse(json) as { notes: EngineNote[]; tempo: number };
+				return this.ts(e).beginSession(parsed.notes, parsed.tempo);
+			}
+			return this.withText(json, (p, l) => this.fn!.begin(e, p, l));
+		},
+		step: (e: number, n: number) => (!this.fn ? this.ts(e).step(n) : this.fn.step(e, n)),
 		finish: (e: number): Float32Array | null => {
+			if (!this.fn) return this.ts(e).finish();
 			const bytes = this.take(this.fn.finish(e));
 			return bytes ? new Float32Array(bytes.buffer, 0, bytes.byteLength >> 2) : null;
 		},
-		report: (e: number) => this.takeJson<RenderReport>(this.fn.report(e)),
-		plan: (e: number) => this.takeJson<PlanEntry[]>(this.fn.plan(e)) ?? [],
+		report: (e: number) =>
+			!this.fn ? this.ts(e).report() : this.takeJson<RenderReport>(this.fn.report(e)),
+		plan: (e: number) =>
+			!this.fn ? this.ts(e).plan() : (this.takeJson<PlanEntry[]>(this.fn.plan(e)) ?? []),
 		renderPlanned: (e: number, indices: number[]) =>
-			this.withBytes(new Uint8Array(Uint32Array.from(indices).buffer), (p, l) =>
-				this.fn.renderPlanned(e, p, l)
-			),
+			!this.fn
+				? this.ts(e).renderPlanned(indices)
+				: this.withBytes(new Uint8Array(Uint32Array.from(indices).buffer), (p, l) =>
+						this.fn!.renderPlanned(e, p, l)
+					),
 		read: (e: number, start: number, len: number): Float32Array | null => {
+			if (!this.fn) return this.ts(e).read(start, len);
 			const bytes = this.take(this.fn.read(e, start, len));
 			return bytes ? new Float32Array(bytes.buffer, 0, bytes.byteLength >> 2) : null;
 		},
-		end: (e: number, complete: boolean) => !!this.fn.end(e, complete ? 1 : 0),
+		end: (e: number, complete: boolean) =>
+			!this.fn ? this.ts(e).endStream(complete) : !!this.fn.end(e, complete ? 1 : 0),
 		oneshot: (e: number, json: string) => {
-			const bytes = this.take(this.withText(json, (p, l) => this.fn.oneshot(e, p, l)));
+			if (!this.fn) {
+				const parsed = JSON.parse(json) as { notes: EngineNote[]; tempo: number };
+				return this.ts(e).renderOneshot(parsed.notes, parsed.tempo);
+			}
+			const bytes = this.take(this.withText(json, (p, l) => this.fn!.oneshot(e, p, l)));
 			if (!bytes) return null;
 			const jsonLen = new DataView(bytes.buffer).getUint32(0, true);
 			const report = JSON.parse(decoder.decode(bytes.subarray(4, 4 + jsonLen))) as RenderReport;
