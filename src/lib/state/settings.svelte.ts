@@ -1,4 +1,5 @@
 import { browser } from '$app/env';
+import type { VocalPolishMode } from '#lib/render/mastering';
 
 export type PlaybackStart = 'cursor' | 'start';
 export type AnalysisQuality = 'accurate' | 'fast';
@@ -15,6 +16,7 @@ export interface SettingsData {
 	snap: boolean;
 	playbackStart: PlaybackStart;
 	followPlayhead: boolean;
+	vocalPolish: VocalPolishMode;
 	/** Keep rendering while paused (off: a render that is not finished stops with playback and resumes from the cache). */
 	backgroundRender: boolean;
 	/** 0 = choose automatically. */
@@ -48,6 +50,7 @@ const DEFAULTS: SettingsData = {
 	snap: true,
 	playbackStart: 'cursor',
 	followPlayhead: true,
+	vocalPolish: 'studio',
 	backgroundRender: false,
 	analysisWorkers: 0,
 	analysisQuality: 'fast',

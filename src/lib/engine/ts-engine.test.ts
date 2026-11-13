@@ -86,15 +86,21 @@ describe('Pure-TS synthesis engine DSP primitives', () => {
 		expect(res[0].tailAdjust).toBe(-25);
 	});
 
-	it('analyzes WAV into binary WTFA features and detects approximate F0', () => {
+	it('analyzes WAV into binary WTFA v3 features with 4-band D4C aperiodicity and accurate F0', () => {
 		const wav = makeSineWav(261.63, 0.5);
-		const featBytes = analyzeWavBytes(wav, 0);
-		expect(featBytes).not.toBeNull();
-		const parsed = decodeFeatures(featBytes!);
-		expect(parsed).not.toBeNull();
-		expect(parsed!.sampleRate).toBe(SAMPLE_RATE);
-		expect(parsed!.baseF0).toBeGreaterThan(220);
-		expect(parsed!.baseF0).toBeLessThan(300);
+		const featAcc = decodeFeatures(analyzeWavBytes(wav, 0)!);
+		const featFast = decodeFeatures(analyzeWavBytes(wav, 1)!);
+		expect(featAcc).not.toBeNull();
+		expect(featFast).not.toBeNull();
+		expect(featAcc!.sampleRate).toBe(SAMPLE_RATE);
+		expect(featAcc!.baseF0).toBeGreaterThan(255);
+		expect(featAcc!.baseF0).toBeLessThan(268);
+		expect(featFast!.baseF0).toBeGreaterThan(255);
+		expect(featFast!.baseF0).toBeLessThan(268);
+		expect(featAcc!.ap.length).toBe(featAcc!.f0.length * 4);
+		// Mid-vowel frame (k=25): low chest band must be more periodic than upper air band.
+		const mid = 25 * 4;
+		expect(featAcc!.ap[mid]).toBeLessThan(featAcc!.ap[mid + 3]);
 	});
 });
 

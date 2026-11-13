@@ -113,6 +113,13 @@
 				<option value="start">Start of the song</option>
 			</select>
 		</div>
+		<div class="field">
+			<label for="s-polish">Vocal sound polish</label>
+			<select id="s-polish" bind:value={settings.data.vocalPolish}>
+				<option value="studio">Studio warmth, presence &amp; stereo room (default)</option>
+				<option value="dry">Dry — raw synthesizer output</option>
+			</select>
+		</div>
 		<label class="check"
 			><input type="checkbox" bind:checked={settings.data.followPlayhead} /> Follow playhead while playing</label
 		>

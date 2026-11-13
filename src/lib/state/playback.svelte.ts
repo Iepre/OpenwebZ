@@ -18,6 +18,7 @@ import { renderers } from './renderers';
 import { project } from './project.svelte';
 import { settings } from './settings.svelte';
 import { DEFAULT_CEILING, LIMITER_LOOKAHEAD, limit } from '#lib/render/limiter';
+import { createStudioReverbImpulse, masterVocalPcm } from '#lib/render/mastering';
 import { ui } from './ui.svelte';
 import { lyrics } from './lyrics.svelte';
 import { voicebank } from './voicebank.svelte';
@@ -72,6 +73,7 @@ class PlaybackState {
 	private renderedKey = '';
 	private run: ProjectRender | null = null;
 	private ctx: AudioContext | null = null;
+	private studioInput: AudioNode | null = null;
 	private sources: AudioBufferSourceNode[] = [];
 	private timer: ReturnType<typeof setInterval> | undefined;
 	/** Next sample (of the song) to hand over, and the audio-clock time at which it will sound. */
@@ -487,8 +489,73 @@ class PlaybackState {
 			} catch {
 				this.ctx = new AudioContext({ latencyHint: 'interactive' });
 			}
+			this.studioInput = this.buildStudioBus(this.ctx);
 		}
 		return this.ctx;
+	}
+
+	private buildStudioBus(ctx: AudioContext): AudioNode {
+		const input = ctx.createGain();
+		const hp = ctx.createBiquadFilter();
+		hp.type = 'highpass';
+		hp.frequency.value = 65;
+
+		const mudTrim = ctx.createBiquadFilter();
+		mudTrim.type = 'peaking';
+		mudTrim.frequency.value = 320;
+		mudTrim.Q.value = 0.9;
+		mudTrim.gain.value = -1.0;
+
+		const presence = ctx.createBiquadFilter();
+		presence.type = 'peaking';
+		presence.frequency.value = 3200;
+		presence.Q.value = 0.85;
+		presence.gain.value = 1.6;
+
+		const air = ctx.createBiquadFilter();
+		air.type = 'highshelf';
+		air.frequency.value = 10500;
+		air.gain.value = 1.2;
+
+		const comp = ctx.createDynamicsCompressor();
+		comp.threshold.value = -10;
+		comp.knee.value = 12;
+		comp.ratio.value = 2.5;
+		comp.attack.value = 0.004;
+		comp.release.value = 0.14;
+
+		const dryGain = ctx.createGain();
+		dryGain.gain.value = 0.94;
+
+		const wetGain = ctx.createGain();
+		wetGain.gain.value = 0.095;
+
+		const convolver = ctx.createConvolver();
+		const sr = ctx.sampleRate || SAMPLE_RATE;
+		const ir = createStudioReverbImpulse(sr, 0.34);
+		const irBuf = ctx.createBuffer(2, ir.left.length, sr);
+		irBuf.copyToChannel(ir.left as Float32Array<ArrayBuffer>, 0);
+		irBuf.copyToChannel(ir.right as Float32Array<ArrayBuffer>, 1);
+		convolver.buffer = irBuf;
+
+		input.connect(hp);
+		hp.connect(mudTrim);
+		mudTrim.connect(presence);
+		presence.connect(air);
+		air.connect(dryGain);
+		dryGain.connect(comp);
+		air.connect(convolver);
+		convolver.connect(wetGain);
+		wetGain.connect(comp);
+		comp.connect(ctx.destination);
+		return input;
+	}
+
+	private outputNode(ctx: AudioContext): AudioNode {
+		if (settings.data.vocalPolish === 'studio') {
+			return this.studioInput ?? ctx.destination;
+		}
+		return ctx.destination;
 	}
 
 	private start(fromMs: number) {
@@ -615,7 +682,7 @@ class PlaybackState {
 		piece.copyToChannel(limited.pcm as Float32Array<ArrayBuffer>, 0);
 		const source = ctx.createBufferSource();
 		source.buffer = piece;
-		source.connect(ctx.destination);
+		source.connect(this.outputNode(ctx));
 		source.onended = () => {
 			this.sources = this.sources.filter((s) => s !== source);
 		};
@@ -754,7 +821,7 @@ class PlaybackState {
 		if (!this.ctx) return;
 		const source = this.ctx.createBufferSource();
 		source.buffer = buffer;
-		source.connect(this.ctx.destination);
+		source.connect(this.outputNode(this.ctx));
 		source.onended = () => {
 			if (this.previewSource === source) this.previewSource = null;
 		};
@@ -806,11 +873,13 @@ class PlaybackState {
 			this.exporting = false;
 		}
 		const source = this.buffer!.getChannelData(0);
+		const polished =
+			settings.data.vocalPolish === 'studio' ? masterVocalPcm(source, SAMPLE_RATE) : source;
 		// Playback is limited on the fly; the file gets the same limiter, and quiet mixes are brought up first.
 		let peak = 0;
-		for (const v of source) peak = Math.max(peak, Math.abs(v));
+		for (const v of polished) peak = Math.max(peak, Math.abs(v));
 		const boost = peak > 0.001 && peak < 0.8 ? 0.95 / peak : 1;
-		const mix = boost === 1 ? source : source.map((v) => v * boost);
+		const mix = boost === 1 ? polished : polished.map((v) => v * boost);
 		const pcm = limit(mix, 0, mix.length, DEFAULT_CEILING).pcm;
 		downloadBlob(encodeWav(pcm, SAMPLE_RATE), `${safeFilename(project.name)}.wav`, 'audio/wav');
 		ui.toast('WAV exported.', 'success');
