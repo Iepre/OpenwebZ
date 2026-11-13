@@ -150,7 +150,7 @@ export async function serializeVpr(
 					pos: 0,
 					duration: endTick,
 					styleName: 'No Effect',
-					voice: { compID: 'WEBTAU', langID: 0 },
+					voice: { compID: 'OPENWEBZ', langID: 0 },
 					notes: sorted.map((n) => ({
 						lyric: n.lyric || 'a',
 						phoneme: 'a',
@@ -174,7 +174,7 @@ export async function serializeVpr(
 
 	const sequence = {
 		version: { major: 5, minor: 0, revision: 0 },
-		vender: 'WebTAU',
+		vender: 'OpenwebZ',
 		title: input.name,
 		masterTrack: {
 			samplingRate: 44100,

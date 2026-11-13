@@ -22,6 +22,7 @@ export interface SettingsData {
 	analysisQuality: AnalysisQuality;
 	backgroundAnalysis: boolean;
 	showNoteNames: boolean;
+	showNoteWaveforms: boolean;
 	pitchMode: PitchMode;
 	pitchStyle: PitchStyle;
 	eraserMode: EraserMode;
@@ -52,6 +53,7 @@ const DEFAULTS: SettingsData = {
 	analysisQuality: 'fast',
 	backgroundAnalysis: false,
 	showNoteNames: true,
+	showNoteWaveforms: true,
 	pitchMode: 'track',
 	pitchStyle: 'freehand',
 	eraserMode: 'all',
@@ -66,12 +68,12 @@ const DEFAULTS: SettingsData = {
 	settingsVersion: 3
 };
 
-const STORAGE_KEY = 'webtau:settings';
+const STORAGE_KEY = 'openwebz:settings';
 
 function load(): SettingsData {
 	if (!browser) return { ...DEFAULTS };
 	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
+		const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem('webtau:settings');
 		const stored = raw ? JSON.parse(raw) : {};
 		const data: SettingsData = { ...DEFAULTS, ...stored };
 		// v2: the fast DIO analyzer became the default; apply it to older stored settings once.

@@ -11,5 +11,5 @@ export function downloadBlob(data: BlobPart, filename: string, type = 'applicati
 }
 
 export function safeFilename(name: string): string {
-	return name.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'webtau';
+	return name.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'openwebz';
 }

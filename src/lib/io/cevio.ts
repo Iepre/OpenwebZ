@@ -251,9 +251,11 @@ export function parseCevioXml(xml: string, kind: 'ccs' | 'tssln' = 'ccs'): Cevio
 				const volume = Number.isFinite(db)
 					? Math.max(0, Math.min(150, Math.round(100 * Math.pow(10, db / 20))))
 					: 100;
+				const singerName = (u.attrs.castid ?? meta?.castid ?? '').trim();
 				track = createTrack(tracks.length, {
 					name: meta?.name || u.attrs.name || `Track ${tracks.length + 1}`,
 					color,
+					...(singerName ? { singer: singerName } : {}),
 					mute: (meta?.ismuted ?? '').toLowerCase() === 'true',
 					solo: (meta?.issolo ?? '').toLowerCase() === 'true',
 					volume
@@ -363,7 +365,7 @@ export function serializeCcs(input: CevioExportInput): { text: string; warnings:
 		);
 		unitXml.push(
 			[
-				`\t\t\t\t<Unit Version="1.0" Id="${unitId}" Category="SingerSong" Group="${groupId}" StartTime="00:00:00" Duration="01:00:00" CastId="${escapeXml(input.voicebank)}">`,
+				`\t\t\t\t<Unit Version="1.0" Id="${unitId}" Category="SingerSong" Group="${groupId}" StartTime="00:00:00" Duration="01:00:00" CastId="${escapeXml(track.singer || input.voicebank)}">`,
 				buildSongXml(sorted, input.tempos, input.timeSignature, scale),
 				`\t\t\t\t</Unit>`
 			].join('\n')
@@ -377,8 +379,8 @@ export function serializeCcs(input: CevioExportInput): { text: string; warnings:
 	const text = [
 		`<?xml version="1.0" encoding="utf-8"?>`,
 		`<Scenario Code="1">`,
-		`\t<Sequence Id="webtau-seq">`,
-		`\t\t<Scene Id="webtau-scene">`,
+		`\t<Sequence Id="openwebz-seq">`,
+		`\t\t<Scene Id="openwebz-scene">`,
 		`\t\t\t<Units>`,
 		unitXml.join('\n'),
 		`\t\t\t</Units>`,
@@ -407,7 +409,7 @@ export function serializeTssln(input: CevioExportInput): { text: string; warning
 			const sorted = sortNotes(trimmed);
 			return [
 				`\t\t<Track Id="track-${idx + 1}" Name="${escapeXml(track.name)}">`,
-				`\t\t\t<Unit Category="SingerSong" Name="${escapeXml(track.name)}" CastId="${escapeXml(input.voicebank)}">`,
+				`\t\t\t<Unit Category="SingerSong" Name="${escapeXml(track.name)}" CastId="${escapeXml(track.singer || input.voicebank)}">`,
 				buildSongXml(sorted, input.tempos, input.timeSignature, scale),
 				`\t\t\t</Unit>`,
 				`\t\t</Track>`

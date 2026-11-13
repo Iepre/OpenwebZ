@@ -70,7 +70,12 @@ export class EngineSession {
 		if (options.mode !== undefined) this.scheduler.setMode(options.mode);
 	}
 
+	get loadedVoicebankId(): string | null {
+		return this.voicebank?.id ?? null;
+	}
+
 	async loadVoicebank(vb: Voicebank): Promise<void> {
+		if (this.voicebank?.id === vb.id) return;
 		this.scheduler.stopWarmUp();
 		this.voicebank = null;
 		const { entries } = await this.synth.loadVoicebank(vb.oto, vb.prefixMap);

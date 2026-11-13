@@ -23,7 +23,8 @@ interface Snapshot {
 	tracks: Track[];
 }
 
-const AUTOSAVE_KEY = 'webtau:autosave';
+const AUTOSAVE_KEY = 'openwebz:autosave';
+const LEGACY_AUTOSAVE_KEY = 'webtau:autosave';
 
 /** True when both lists hold the very same items: an edit that rebuilt an array but changed nothing. */
 function sameItems<T>(a: readonly T[], b: readonly T[]): boolean {
@@ -435,7 +436,7 @@ export class ProjectState {
 	restoreAutosave(): boolean {
 		if (!browser) return false;
 		try {
-			const raw = localStorage.getItem(AUTOSAVE_KEY);
+			const raw = localStorage.getItem(AUTOSAVE_KEY) ?? localStorage.getItem(LEGACY_AUTOSAVE_KEY);
 			if (!raw) return false;
 			const data = JSON.parse(raw) as ProjectData;
 			if (!Array.isArray(data.notes) || !data.notes.length) return false;

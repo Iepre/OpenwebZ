@@ -1,6 +1,6 @@
 {
-	"name": "WebTAU",
-	"short_name": "WebTAU",
+	"name": "OpenwebZ",
+	"short_name": "OpenwebZ",
 	"description": "A browser-based vocal synthesizer for UTAU voicebanks.",
 	"start_url": ".",
 	"scope": ".",

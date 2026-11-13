@@ -3,7 +3,7 @@
  * analyzed only once per browser. Every failure degrades to "no cache".
  */
 
-const DB_NAME = 'webtau-features';
+const DB_NAME = 'openwebz-features';
 const STORE = 'features';
 const BANKS = 'banks';
 /** Oldest voicebanks are evicted once the cache grows beyond this. */

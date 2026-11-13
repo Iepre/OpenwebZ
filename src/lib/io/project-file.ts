@@ -9,7 +9,8 @@ import {
 import { createTrack } from '#lib/core/music';
 import { uid } from '#lib/core/ids';
 
-const FORMAT = 'webtau-project';
+const FORMAT = 'openwebz-project';
+const LEGACY_FORMAT = 'webtau-project';
 const VERSION = 1;
 
 export function serializeProject(data: ProjectData): string {
@@ -70,7 +71,9 @@ function normalizeCurve(raw: unknown): Track['pitchCurve'] {
 
 export function parseProject(text: string): ProjectData {
 	const raw = JSON.parse(text);
-	if (raw?.format !== FORMAT) throw new Error('This is not a WebTAU project file.');
+	if (raw?.format !== FORMAT && raw?.format !== LEGACY_FORMAT) {
+		throw new Error('This is not an OpenwebZ project file.');
+	}
 	const tracks: Track[] = raw.tracks?.length
 		? raw.tracks.map((t: Partial<Track>, i: number) =>
 				createTrack(i, {

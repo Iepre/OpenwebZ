@@ -1,14 +1,19 @@
-import { toEngineNotes } from '#lib/core/engine-notes';
+import { isAudible, toEngineNotes } from '#lib/core/engine-notes';
+import type { Note, Track } from '#lib/core/types';
 import { encodeWav } from '#lib/io/wav';
 import { downloadBlob, safeFilename } from '#lib/io/download';
 import {
+	mixOutcomes,
 	startRender,
+	type MixedOutcome,
 	type NoteSpanInfo,
 	type ProjectRender,
 	type RenderGroup
 } from '#lib/render/registry';
 import type { Interval } from '#lib/render/intervals';
-import type { RenderStream } from '#lib/render/types';
+import type { RenderJob, RenderOutcome, RenderStream, RendererBackend } from '#lib/render/types';
+import { resolveLyric } from '#lib/plugins/registry';
+import { plugins } from './plugins.svelte';
 import { renderers } from './renderers';
 import { project } from './project.svelte';
 import { settings } from './settings.svelte';
@@ -55,12 +60,15 @@ class PlaybackState {
 	unknownLyrics = $state.raw<ReadonlySet<string>>(new Set());
 	/** Where each note's sound lies on the time axis after the last render (for diagnostics and tests). */
 	spans = $state.raw<NoteSpanInfo[]>([]);
+	/** Increments whenever synthesized PCM buffers or ready ranges change. */
+	waveformRevision = $state(0);
 
 	/** Playhead in ticks (follows tempo changes). */
 	positionTick = $derived(project.tempoMap.msToTick(this.positionMs));
 	busy = $derived(this.status === 'analyzing' || this.status === 'rendering');
 
 	private buffer: AudioBuffer | null = null;
+	private renderedPcmData: Float32Array | null = null;
 	private renderedKey = '';
 	private run: ProjectRender | null = null;
 	private ctx: AudioContext | null = null;
@@ -85,12 +93,30 @@ class PlaybackState {
 	}
 
 	private key(): string {
-		return `${project.revision}:${voicebank.revision}:${settings.data.analysisQuality}`;
+		const trackSingers = project.tracks.map((t) => `${t.id}=${t.singer ?? ''}`).join(',');
+		return `${project.revision}:${voicebank.revision}:${settings.data.analysisQuality}:${trackSingers}`;
 	}
 
 	/** True when there is no finished or running render of what is on screen now. */
 	get isStale(): boolean {
 		return !this.run || this.renderedKey !== this.key();
+	}
+
+	/** 44.1 kHz mono PCM for the current render (live stream while rendering, final mix once done). */
+	get renderPcm(): Float32Array | null {
+		if (this.completed && !this.isStale && this.renderedPcmData) return this.renderedPcmData;
+		if (this.run && this.renderedKey === this.key()) return this.run.stream.buffer;
+		return null;
+	}
+
+	/** True when `[startMs, endMs]` already contains synthesized audio in `renderPcm`. */
+	hasRenderedRange(startMs: number, endMs: number): boolean {
+		if (this.completed && !this.isStale && this.renderedPcmData) return true;
+		if (!this.run || this.renderedKey !== this.key()) return false;
+		for (const r of this.readyRanges) {
+			if (r.end > startMs && r.start < endMs) return true;
+		}
+		return false;
 	}
 
 	/** End of the music in ms (a short tail after the last note). */
@@ -100,15 +126,168 @@ class PlaybackState {
 
 	// ---- rendering -----------------------------------------------------------
 
+	private resolveTrackSingerKey(track: Track | undefined): string {
+		const raw = track?.singer?.trim();
+		if (raw) {
+			const meta = voicebank.findMeta(raw);
+			return meta ? meta.id : raw;
+		}
+		return voicebank.current?.id ?? '';
+	}
+
+	private startMultiSingerRender(
+		partitions: { backend: RendererBackend; singerRef: string; notes: Note[] }[],
+		tempo: number
+	): ProjectRender {
+		const totalNotes = partitions.reduce((sum, p) => sum + p.notes.length, 0);
+		const progress = { done: 0, total: totalNotes };
+		let pcm: Float32Array = new Float32Array(0);
+		let complete = false;
+		let waiting = 'Loading voicebanks…';
+		let cancelled = false;
+		let currentJob: RenderJob | null = null;
+
+		const emptyReport: RenderOutcome['report'] = {
+			total: 0,
+			rendered: 0,
+			cached: 0,
+			skipped_rests: 0,
+			missing_alias: [],
+			missing_features: [],
+			errors: []
+		};
+
+		let resolveResult!: (value: MixedOutcome | null) => void;
+		let rejectResult!: (reason?: unknown) => void;
+		const result = new Promise<MixedOutcome | null>((res, rej) => {
+			resolveResult = res;
+			rejectResult = rej;
+		});
+
+		const stream: RenderStream = {
+			get buffer() {
+				return pcm;
+			},
+			get durationMs() {
+				return (pcm.length / SAMPLE_RATE) * 1000;
+			},
+			focus: () => {},
+			readyUntil: (ms) => (complete ? Math.max(ms, (pcm.length / SAMPLE_RATE) * 1000) : ms),
+			ready: (): Interval[] =>
+				complete ? [{ start: 0, end: (pcm.length / SAMPLE_RATE) * 1000 }] : [],
+			get complete() {
+				return complete;
+			},
+			progress,
+			get waiting() {
+				return waiting;
+			},
+			onChange: null,
+			promise: result.then((o) => (o ? { pcm: o.pcm, report: emptyReport } : null)),
+			cancel: () => {
+				cancelled = true;
+				currentJob?.cancel();
+			}
+		};
+
+		void (async () => {
+			const groups: RenderGroup[] = [];
+			const outcomes: RenderOutcome[] = [];
+			try {
+				let completedNotes = 0;
+				for (const part of partitions) {
+					if (cancelled) {
+						resolveResult(null);
+						return;
+					}
+					const vb =
+						(part.singerRef ? await voicebank.resolveBank(part.singerRef) : null) ??
+						voicebank.current;
+					if (!vb) {
+						throw new Error(
+							part.singerRef
+								? `Voicebank “${part.singerRef}” is not loaded.`
+								: 'Load a voicebank first (left panel).'
+						);
+					}
+					waiting = `Loading ${vb.name}…`;
+					stream.onChange?.();
+					await part.backend.load(vb);
+					if (cancelled) {
+						resolveResult(null);
+						return;
+					}
+
+					const index = voicebank.indexFor(vb);
+					const resMap = index ? plugins.resolver.resolveAll(part.notes, index) : null;
+					const aliasOf = (n: Note) => {
+						const r = resMap?.get(n.id);
+						return r && r.status !== 'rest' && r.status !== 'missing' && r.alias
+							? r.alias
+							: n.lyric;
+					};
+					const converted = toEngineNotes(part.notes, project.tempoMap, project.tracks, aliasOf);
+					groups.push({ backend: part.backend, ...converted });
+
+					const partBase = completedNotes;
+					waiting = `Rendering (${vb.name})…`;
+					stream.onChange?.();
+
+					const job = part.backend.render(converted.notes, tempo, {
+						onAnalyze: (done, total) => {
+							waiting = `Analyzing ${vb.name} ${done}/${total}`;
+							stream.onChange?.();
+						},
+						onSynthesize: (done) => {
+							progress.done = partBase + done;
+							waiting = `Rendering ${vb.name} ${progress.done}/${totalNotes}`;
+							stream.onChange?.();
+						}
+					});
+					currentJob = job;
+					const outcome = await job.promise;
+					currentJob = null;
+					if (cancelled || !outcome) {
+						resolveResult(null);
+						return;
+					}
+					outcomes.push(outcome);
+					completedNotes += part.notes.length;
+					progress.done = completedNotes;
+					stream.onChange?.();
+				}
+
+				const currentVb = voicebank.current;
+				if (currentVb) {
+					const restoreBackend = renderers.all().find((r) => r.supports(currentVb));
+					if (restoreBackend) await restoreBackend.load(currentVb).catch(() => {});
+				}
+				if (cancelled) {
+					resolveResult(null);
+					return;
+				}
+				const mixed = mixOutcomes(groups, outcomes);
+				pcm = mixed.pcm;
+				complete = true;
+				stream.onChange?.();
+				resolveResult(mixed);
+			} catch (err) {
+				rejectResult(err);
+			}
+		})();
+
+		return {
+			stream,
+			result,
+			cancel: () => stream.cancel()
+		};
+	}
+
 	/**
 	 * Makes sure there is a render of the current project (starting one if needed) and tells it
 	 * to work around `focusMs` first. Returns null when there is nothing to render.
 	 */
 	private ensureRender(focusMs: number): ProjectRender | null {
-		if (!voicebank.current) {
-			ui.error('Load a voicebank first (left panel).');
-			return null;
-		}
 		if (!project.notes.length) {
 			ui.error('Add some notes first.');
 			return null;
@@ -120,6 +299,22 @@ class PlaybackState {
 			);
 			return null;
 		}
+
+		const byTrack = new Map(project.tracks.map((t) => [t.id, t]));
+		const audibleNotes = project.notes.filter((n) =>
+			isAudible(byTrack.get(n.track), project.tracks)
+		);
+		const hasAnyBank =
+			Boolean(voicebank.current) ||
+			audibleNotes.some((n) => {
+				const singer = byTrack.get(n.track)?.singer?.trim();
+				return Boolean(singer && voicebank.findMeta(singer));
+			});
+		if (!hasAnyBank) {
+			ui.error('Load a voicebank first (left panel).');
+			return null;
+		}
+
 		if (this.run && this.renderedKey === this.key()) {
 			this.run.stream.focus(focusMs);
 			return this.run;
@@ -127,26 +322,57 @@ class PlaybackState {
 		this.run?.cancel();
 
 		const key = this.key();
-		const groups: RenderGroup[] = renderers
-			.plan(project.notes, project.tracks)
-			.map(({ backend, notes }) => ({
-				backend,
-				...toEngineNotes(notes, project.tempoMap, project.tracks, lyrics.alias)
-			}));
+		const partMap = new Map<
+			string,
+			{ backend: RendererBackend; singerRef: string; notes: Note[] }
+		>();
+		for (const n of audibleNotes) {
+			const track = byTrack.get(n.track);
+			const backend = renderers.forTrack(track);
+			const singerRef = this.resolveTrackSingerKey(track);
+			const pKey = `${backend.id}::${singerRef}`;
+			let entry = partMap.get(pKey);
+			if (!entry) {
+				entry = { backend, singerRef, notes: [] };
+				partMap.set(pKey, entry);
+			}
+			entry.notes.push(n);
+		}
+		const partitions = [...partMap.values()];
+		const useSingleActiveStream =
+			partitions.length <= 1 &&
+			(!partitions.length ||
+				!partitions[0].singerRef ||
+				partitions[0].singerRef === voicebank.current?.id);
+
 		this.status = 'analyzing';
 		this.progress = 0;
 		this.message = 'Preparing samples…';
 		this.completed = false;
 		this.buffer = null;
+		this.renderedPcmData = null;
 		this.readyRanges = [];
+		this.waveformRevision++;
 
-		const run = startRender(groups, project.primaryTempo, {
-			onAnalyze: (done, total) => {
-				if (this.run !== run) return;
-				this.status = 'analyzing';
-				this.message = `Analyzing samples ${done}/${total}`;
-			}
-		});
+		let run: ProjectRender;
+		if (useSingleActiveStream) {
+			const groups: RenderGroup[] = renderers
+				.plan(project.notes, project.tracks)
+				.map(({ backend, notes }) => ({
+					backend,
+					...toEngineNotes(notes, project.tempoMap, project.tracks, lyrics.alias)
+				}));
+			run = startRender(groups, project.primaryTempo, {
+				onAnalyze: (done, total) => {
+					if (this.run !== run) return;
+					this.status = 'analyzing';
+					this.message = `Analyzing samples ${done}/${total}`;
+				}
+			});
+		} else {
+			run = this.startMultiSingerRender(partitions, project.primaryTempo);
+		}
+
 		this.run = run;
 		this.renderedKey = key;
 		run.stream.focus(focusMs);
@@ -157,13 +383,16 @@ class PlaybackState {
 				if (this.run !== run) return;
 				if (!outcome) {
 					this.run = null;
+					this.renderedPcmData = null;
 					this.status = 'idle';
 					this.readyRanges = [];
+					this.waveformRevision++;
 					return;
 				}
 				const buffer = new AudioBuffer({ length: outcome.pcm.length, sampleRate: SAMPLE_RATE });
 				buffer.copyToChannel(outcome.pcm as Float32Array<ArrayBuffer>, 0);
 				this.buffer = buffer;
+				this.renderedPcmData = outcome.pcm;
 				this.completed = true;
 				this.durationMs = buffer.duration * 1000;
 				this.unknownLyrics = new Set(outcome.missingAlias);
@@ -171,6 +400,7 @@ class PlaybackState {
 				this.readyRanges = [];
 				this.status = 'ready';
 				this.progress = 1;
+				this.waveformRevision++;
 				this.message = `Rendered ${outcome.rendered}, reused ${outcome.cached}`;
 				ui.setStatus(this.message);
 				if (outcome.missingAlias.length) {
@@ -184,8 +414,10 @@ class PlaybackState {
 			(error) => {
 				if (this.run !== run) return;
 				this.run = null;
+				this.renderedPcmData = null;
 				this.status = 'error';
 				this.buffering = false;
+				this.waveformRevision++;
 				this.message = error instanceof Error ? error.message : 'Synthesis failed.';
 				ui.error(this.message);
 			}
@@ -200,8 +432,12 @@ class PlaybackState {
 		const { done, total } = stream.progress;
 		this.durationMs = stream.durationMs;
 		this.readyRanges = stream.ready();
+		this.waveformRevision++;
 		this.progress = total ? done / total : 0;
-		this.status = stream.waiting?.startsWith('Analy') ? 'analyzing' : 'rendering';
+		this.status =
+			stream.waiting?.startsWith('Analy') || stream.waiting?.startsWith('Load')
+				? 'analyzing'
+				: 'rendering';
 		this.message = this.buffering
 			? `Buffering… ${done}/${total} notes`
 			: (stream.waiting ?? `Rendering ${done}/${total}`);
@@ -220,6 +456,7 @@ class PlaybackState {
 		this.run = null;
 		this.readyRanges = [];
 		this.buffering = false;
+		this.waveformRevision++;
 		if (this.busy) this.status = 'idle';
 	}
 
@@ -450,24 +687,32 @@ class PlaybackState {
 	private stopBeep: (() => void) | null = null;
 
 	/**
-	 * Plays a short note when a piano key is pressed: with the loaded voicebank
+	 * Plays a short note when a piano key is pressed: with the track's voicebank
 	 * if the lyric exists there, otherwise as a plain tone.
 	 */
 	async preview(pitch: number) {
 		void this.audioContext().resume();
+		const activeTrack = project.tracks.find((t) => t.id === project.activeTrack);
+		const trackVb =
+			(activeTrack?.singer?.trim() ? await voicebank.resolveBank(activeTrack.singer) : null) ??
+			voicebank.current;
 		const lyric = (project.selectedNotes[0]?.lyric || settings.data.defaultLyric || 'a').trim();
-		const key = `${voicebank.revision}|${lyric}|${pitch}`;
+		const singerKey = trackVb?.id ?? voicebank.revision;
+		const key = `${singerKey}|${lyric}|${pitch}`;
 		this.stopPreview();
 
 		const cached = this.previewCache.get(key);
 		if (cached) return this.playPreview(cached);
-		if (!voicebank.current || this.previewing.has(key)) return this.beep(pitch);
+		if (!trackVb || this.previewing.has(key)) return this.beep(pitch);
 
 		this.previewing.add(key);
 		const pressedAt = performance.now();
 		this.beep(pitch); // instant feedback while the voice is rendered
 		try {
-			const resolved = lyrics.preview(lyric, pitch);
+			const index = voicebank.indexFor(trackVb);
+			const resolved = index
+				? resolveLyric(lyric, { index, pitch, prev: null }, plugins.registry)
+				: null;
 			const alias =
 				resolved && resolved.status !== 'missing' && resolved.status !== 'rest'
 					? resolved.alias
@@ -483,7 +728,8 @@ class PlaybackState {
 				volume: 100,
 				modulation: 0
 			};
-			const backend = renderers.forTrack(project.tracks.find((t) => t.id === project.activeTrack));
+			const backend = renderers.forTrack(activeTrack);
+			await backend.load(trackVb);
 			const out = await backend.render([note], project.primaryTempo).promise;
 			if (!out || out.report.missing_alias.length || out.report.missing_features.length) return;
 			const samples = out.pcm.subarray(0, Math.floor(SAMPLE_RATE * 0.75));

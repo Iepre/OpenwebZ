@@ -1,11 +1,12 @@
 {
-	"name": "webtau",
+	"name": "openwebz",
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev --host 0.0.0.0 --port 3000",
 		"build": "vite build",
+		"build:pages": "BASE_PATH=/OpenwebZ vite build && node -e \"import('node:fs').then(f=>f.copyFileSync('build/index.html','build/404.html'))\"",
 		"preview": "vite preview --host 0.0.0.0 --port 3000",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

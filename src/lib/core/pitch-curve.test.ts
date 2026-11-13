@@ -239,14 +239,14 @@ describe('project files and the curve', async () => {
 
 	it('loads files written before curves existed and drops broken strokes', () => {
 		const old = JSON.stringify({
-			format: 'webtau-project',
+			format: 'openwebz-project',
 			version: 1,
 			tracks: [{ id: 't', name: 'Old', color: '#fff', mute: false, solo: false, volume: 100 }],
 			notes: []
 		});
 		expect(parseProject(old).tracks[0].pitchCurve).toEqual([]);
 		const broken = JSON.stringify({
-			format: 'webtau-project',
+			format: 'openwebz-project',
 			tracks: [{ id: 't', pitchCurve: [[{ tick: 'a' }], 'x', [{ tick: 1, pitch: 60 }]] }],
 			notes: []
 		});

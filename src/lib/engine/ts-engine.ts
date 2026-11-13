@@ -8,8 +8,83 @@ const F0_CEIL = 1100.0;
 const DEFAULT_FADE_IN_MS = 5.0;
 const DEFAULT_FADE_OUT_MS = 35.0;
 const FEATURE_MAGIC = 0x41465457; // "WTFA" in little-endian
-const FEATURE_FORMAT_VERSION = 1;
-export const TS_ANALYSIS_VERSION = 101;
+const FEATURE_FORMAT_VERSION = 2;
+export const TS_ANALYSIS_VERSION = 102;
+
+const FFT_SIZE = 1024;
+const FFT_HALF = FFT_SIZE >> 1; // 512
+const SP_BINS = 128; // 64 bins in 0..5512.5 Hz (86 Hz step) + 64 bins in 5512.5..22050 Hz (258 Hz step)
+
+// ---- precomputed FFT tables (N = 1024) --------------------------------------
+
+const REV_1024 = new Uint16Array(FFT_SIZE);
+const TW_COS = new Float64Array(FFT_HALF);
+const TW_SIN = new Float64Array(FFT_HALF);
+const HANN_1024 = new Float64Array(FFT_SIZE);
+const HANN_440 = new Float64Array(440);
+
+(() => {
+	const bits = 10; // log2(1024)
+	for (let i = 0; i < FFT_SIZE; i++) {
+		let r = 0;
+		for (let b = 0; b < bits; b++) {
+			if ((i >> b) & 1) r |= 1 << (bits - 1 - b);
+		}
+		REV_1024[i] = r;
+		HANN_1024[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / FFT_SIZE));
+	}
+	for (let i = 0; i < FFT_HALF; i++) {
+		const ang = (-2 * Math.PI * i) / FFT_SIZE;
+		TW_COS[i] = Math.cos(ang);
+		TW_SIN[i] = Math.sin(ang);
+	}
+	for (let i = 0; i < HANN_440.length; i++) {
+		HANN_440[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (HANN_440.length - 1)));
+	}
+})();
+
+function fft1024(re: Float64Array, im: Float64Array, invert: boolean) {
+	for (let i = 0; i < FFT_SIZE; i++) {
+		const j = REV_1024[i];
+		if (i < j) {
+			const tr = re[i];
+			re[i] = re[j];
+			re[j] = tr;
+			const ti = im[i];
+			im[i] = im[j];
+			im[j] = ti;
+		}
+	}
+
+	const sign = invert ? -1 : 1;
+	for (let len = 2; len <= FFT_SIZE; len <<= 1) {
+		const half = len >> 1;
+		const step = FFT_SIZE / len;
+		for (let i = 0; i < FFT_SIZE; i += len) {
+			for (let j = 0; j < half; j++) {
+				const twIdx = j * step;
+				const wr = TW_COS[twIdx];
+				const wi = sign * TW_SIN[twIdx];
+				const k = i + j;
+				const l = k + half;
+				const xr = re[l] * wr - im[l] * wi;
+				const xi = re[l] * wi + im[l] * wr;
+				re[l] = re[k] - xr;
+				im[l] = im[k] - xi;
+				re[k] += xr;
+				im[k] += xi;
+			}
+		}
+	}
+
+	if (invert) {
+		const invN = 1 / FFT_SIZE;
+		for (let i = 0; i < FFT_SIZE; i++) {
+			re[i] *= invN;
+			im[i] *= invN;
+		}
+	}
+}
 
 // ---- utilities --------------------------------------------------------------
 
@@ -52,6 +127,15 @@ function consonantScale(velocity: number): number {
 function isRest(note: EngineNote): boolean {
 	const a = note.alias.trim().toLowerCase();
 	return a === '' || a === 'r';
+}
+
+function gridBinToFftIndex(b: number): number {
+	return b <= 64 ? b * 2 : 128 + (b - 64) * 6;
+}
+
+function fftIndexToGridPos(k: number): number {
+	if (k <= 128) return k * 0.5;
+	return 64 + (k - 128) / 6;
 }
 
 // ---- oto.ini & prefix.map ---------------------------------------------------
@@ -348,7 +432,7 @@ export function computeTiming(inputs: TimingInput[]): NoteTiming[] {
 	return out;
 }
 
-// ---- WAV decoder & linear/Hermite resampler ---------------------------------
+// ---- WAV decoder & linear resampler -----------------------------------------
 
 export function decodeWav(bytes: Uint8Array): { sampleRate: number; pcm: Float32Array } | null {
 	if (bytes.byteLength < 44) return null;
@@ -449,13 +533,15 @@ function resampleLinear(input: Float32Array, fromRate: number, toRate: number): 
 	return out;
 }
 
-// ---- analysis & feature serialization ---------------------------------------
+// ---- analysis & feature serialization (WORLD-style F0 + SP + AP) ------------
 
 export interface SampleFeatures {
 	sampleRate: number;
 	baseF0: number;
 	f0: Float32Array;
 	rms: Float32Array;
+	ap: Float32Array;
+	sp: Float32Array; // frames * SP_BINS log-magnitude spectral envelope
 	pcm: Float32Array;
 }
 
@@ -465,25 +551,31 @@ function estimateFrameF0(
 	minLag: number,
 	maxLag: number,
 	accurate: boolean
-): { f0: number; rms: number } {
+): { f0: number; rms: number; cmndMin: number } {
 	const win = accurate ? 1024 : 768;
 	const start = Math.max(0, center - (win >> 1));
 	const end = Math.min(pcm.length, start + win);
 	const len = end - start;
-	if (len < maxLag + 8) return { f0: 0, rms: 0 };
+	if (len < maxLag + 8) return { f0: 0, rms: 0, cmndMin: 1 };
+
+	let mean = 0;
+	for (let i = start; i < end; i++) mean += pcm[i];
+	mean /= len;
 
 	let energy = 0;
-	for (let i = start; i < end; i++) energy += pcm[i] * pcm[i];
+	for (let i = start; i < end; i++) {
+		const d = pcm[i] - mean;
+		energy += d * d;
+	}
 	const rms = Math.sqrt(energy / len);
-	if (rms < 0.004) return { f0: 0, rms };
+	if (rms < 0.004) return { f0: 0, rms, cmndMin: 1 };
 
-	// Difference function (YIN-inspired CMND for reliable vocal F0 without octave errors).
 	const step = accurate ? 1 : 2;
 	const cmnd = new Float32Array(maxLag + 1);
 	cmnd[0] = 1;
 	let runningSum = 0;
 	const cmpLen = Math.min(win >> 1, len - maxLag);
-	if (cmpLen < 64) return { f0: 0, rms };
+	if (cmpLen < 64) return { f0: 0, rms, cmndMin: 1 };
 
 	for (let lag = 1; lag <= maxLag; lag += step) {
 		let diff = 0;
@@ -513,9 +605,8 @@ function estimateFrameF0(
 		}
 	}
 
-	if (bestLag < minLag || bestVal > 0.45) return { f0: 0, rms };
+	if (bestLag < minLag || bestVal > 0.45) return { f0: 0, rms, cmndMin: bestVal };
 
-	// Parabolic refinement around bestLag.
 	let refinedLag = bestLag;
 	if (bestLag > minLag && bestLag < maxLag) {
 		const y0 = cmnd[bestLag - 1];
@@ -528,44 +619,129 @@ function estimateFrameF0(
 	}
 
 	const f0 = SAMPLE_RATE / refinedLag;
-	return f0 >= F0_FLOOR && f0 <= F0_CEIL ? { f0, rms } : { f0: 0, rms };
+	return f0 >= F0_FLOOR && f0 <= F0_CEIL
+		? { f0, rms, cmndMin: bestVal }
+		: { f0: 0, rms, cmndMin: 1 };
+}
+
+function smoothF0Median(f0: Float32Array) {
+	const copy = f0.slice();
+	const n = copy.length;
+	const vals: number[] = [];
+	for (let i = 0; i < n; i++) {
+		vals.length = 0;
+		for (let d = -2; d <= 2; d++) {
+			const idx = i + d;
+			if (idx >= 0 && idx < n && copy[idx] >= F0_FLOOR) vals.push(copy[idx]);
+		}
+		if (copy[i] >= F0_FLOOR && vals.length >= 3) {
+			vals.sort((a, b) => a - b);
+			f0[i] = vals[vals.length >> 1];
+		} else if (copy[i] < F0_FLOOR && vals.length >= 3) {
+			// Bridge isolated 1-2 frame F0 dropouts inside sustained vowels.
+			const hasLeft =
+				(i - 1 >= 0 && copy[i - 1] >= F0_FLOOR) || (i - 2 >= 0 && copy[i - 2] >= F0_FLOOR);
+			const hasRight =
+				(i + 1 < n && copy[i + 1] >= F0_FLOOR) || (i + 2 < n && copy[i + 2] >= F0_FLOOR);
+			if (hasLeft && hasRight) {
+				vals.sort((a, b) => a - b);
+				f0[i] = vals[vals.length >> 1];
+			}
+		}
+	}
 }
 
 export function analyzeWavBytes(wav: Uint8Array, mode: AnalysisMode): Uint8Array | null {
 	const decoded = decodeWav(wav);
 	if (!decoded || decoded.pcm.length < 512) return null;
 	const { pcm } = decoded;
-	const hop = Math.round((FRAME_PERIOD_MS / 1000) * SAMPLE_RATE); // 220 or 221 samples
+	const hop = Math.round((FRAME_PERIOD_MS / 1000) * SAMPLE_RATE); // 220 samples
 	const frames = Math.max(1, Math.floor(pcm.length / hop));
 	const f0 = new Float32Array(frames);
 	const rms = new Float32Array(frames);
+	const ap = new Float32Array(frames);
+	const sp = new Float32Array(frames * SP_BINS);
+	const cmndMins = new Float32Array(frames);
 
 	const minLag = Math.floor(SAMPLE_RATE / F0_CEIL);
 	const maxLag = Math.ceil(SAMPLE_RATE / F0_FLOOR);
 	const accurate = mode === 0;
 
-	let weightedF0 = 0;
-	let totalWeight = 0;
 	for (let k = 0; k < frames; k++) {
 		const res = estimateFrameF0(pcm, k * hop, minLag, maxLag, accurate);
 		f0[k] = res.f0;
 		rms[k] = res.rms;
-		if (res.f0 >= F0_FLOOR && res.f0 <= F0_CEIL) {
-			const w = res.rms * res.rms;
-			weightedF0 += res.f0 * w;
+		cmndMins[k] = res.cmndMin;
+	}
+	smoothF0Median(f0);
+
+	let weightedF0 = 0;
+	let totalWeight = 0;
+	for (let k = 0; k < frames; k++) {
+		if (f0[k] >= F0_FLOOR && f0[k] <= F0_CEIL) {
+			const w = rms[k] * rms[k];
+			weightedF0 += f0[k] * w;
 			totalWeight += w;
 		}
 	}
-
 	let baseF0 = totalWeight > 0 ? weightedF0 / totalWeight : 220;
 	if (!Number.isFinite(baseF0) || baseF0 < F0_FLOOR || baseF0 > F0_CEIL) baseF0 = 220;
 
-	// Pack into compact binary buffer.
-	const headerBytes = 24;
+	const re = new Float64Array(FFT_SIZE);
+	const im = new Float64Array(FFT_SIZE);
+	const prefPwr = new Float64Array(FFT_HALF + 2);
+	const binHz = SAMPLE_RATE / FFT_SIZE; // 43.0664 Hz
+	const hfStartBin = Math.floor(4000 / binHz);
+
+	for (let k = 0; k < frames; k++) {
+		const center = k * hop;
+		const winStart = center - FFT_HALF;
+		im.fill(0);
+		for (let i = 0; i < FFT_SIZE; i++) {
+			const idx = winStart + i;
+			const s = idx >= 0 && idx < pcm.length ? pcm[idx] : 0;
+			re[i] = s * HANN_1024[i];
+		}
+		fft1024(re, im, false);
+
+		let lowE = 0;
+		let highE = 0;
+		prefPwr[0] = 0;
+		for (let b = 0; b <= FFT_HALF; b++) {
+			const pwr = re[b] * re[b] + im[b] * im[b];
+			prefPwr[b + 1] = prefPwr[b] + pwr;
+			if (b < hfStartBin) lowE += pwr;
+			else highE += pwr;
+		}
+
+		// CheapTrick-style F0-adaptive smoothing in linear power domain before log conversion.
+		const localF0 = f0[k] >= F0_FLOOR ? f0[k] : baseF0;
+		const halfW = clamp(Math.round((localF0 * 0.65) / binHz), 1, 20);
+		const rowOffset = k * SP_BINS;
+		for (let gb = 0; gb < SP_BINS; gb++) {
+			const fk = gridBinToFftIndex(gb);
+			const lo = Math.max(0, fk - halfW);
+			const hi = Math.min(FFT_HALF, fk + halfW);
+			const avgPwr = (prefPwr[hi + 1] - prefPwr[lo]) / (hi - lo + 1);
+			sp[rowOffset + gb] = 0.5 * Math.log(avgPwr + 1e-12);
+		}
+
+		if (f0[k] < F0_FLOOR) {
+			ap[k] = 1.0;
+		} else {
+			const hfRatio = highE / Math.max(lowE + highE, 1e-12);
+			ap[k] = clamp(0.03 + cmndMins[k] * 1.15 + hfRatio * 0.15, 0.03, 0.78);
+		}
+	}
+
+	const headerBytes = 28;
 	const f0Bytes = frames * 4;
 	const rmsBytes = frames * 4;
+	const apBytes = frames * 4;
+	const spBytes = frames * SP_BINS * 4;
 	const pcmBytes = pcm.length * 4;
-	const totalBytes = headerBytes + f0Bytes + rmsBytes + pcmBytes;
+	const totalBytes = headerBytes + f0Bytes + rmsBytes + apBytes + spBytes + pcmBytes;
+
 	const out = new ArrayBuffer(totalBytes);
 	const view = new DataView(out);
 	view.setUint32(0, FEATURE_MAGIC, true);
@@ -574,15 +750,23 @@ export function analyzeWavBytes(wav: Uint8Array, mode: AnalysisMode): Uint8Array
 	view.setFloat32(12, baseF0, true);
 	view.setUint32(16, frames, true);
 	view.setUint32(20, pcm.length, true);
+	view.setUint32(24, SP_BINS, true);
 
-	new Float32Array(out, headerBytes, frames).set(f0);
-	new Float32Array(out, headerBytes + f0Bytes, frames).set(rms);
-	new Float32Array(out, headerBytes + f0Bytes + rmsBytes, pcm.length).set(pcm);
+	let cursor = headerBytes;
+	new Float32Array(out, cursor, frames).set(f0);
+	cursor += f0Bytes;
+	new Float32Array(out, cursor, frames).set(rms);
+	cursor += rmsBytes;
+	new Float32Array(out, cursor, frames).set(ap);
+	cursor += apBytes;
+	new Float32Array(out, cursor, frames * SP_BINS).set(sp);
+	cursor += spBytes;
+	new Float32Array(out, cursor, pcm.length).set(pcm);
 	return new Uint8Array(out);
 }
 
 export function decodeFeatures(data: Uint8Array): SampleFeatures | null {
-	if (data.byteLength < 24) return null;
+	if (data.byteLength < 28) return null;
 	const copy = data.slice();
 	const view = new DataView(copy.buffer);
 	if (view.getUint32(0, true) !== FEATURE_MAGIC) return null;
@@ -591,21 +775,36 @@ export function decodeFeatures(data: Uint8Array): SampleFeatures | null {
 	const baseF0 = view.getFloat32(12, true);
 	const frames = view.getUint32(16, true);
 	const pcmLen = view.getUint32(20, true);
-	const expected = 24 + frames * 8 + pcmLen * 4;
-	if (copy.byteLength !== expected || frames === 0 || pcmLen === 0) return null;
+	const spBins = view.getUint32(24, true);
+	if (spBins !== SP_BINS || frames === 0 || pcmLen === 0) return null;
+	const expected = 28 + frames * (12 + spBins * 4) + pcmLen * 4;
+	if (copy.byteLength !== expected) return null;
+
+	let cursor = 28;
+	const f0 = new Float32Array(copy.buffer, cursor, frames);
+	cursor += frames * 4;
+	const rms = new Float32Array(copy.buffer, cursor, frames);
+	cursor += frames * 4;
+	const ap = new Float32Array(copy.buffer, cursor, frames);
+	cursor += frames * 4;
+	const sp = new Float32Array(copy.buffer, cursor, frames * spBins);
+	cursor += frames * spBins * 4;
+	const pcm = new Float32Array(copy.buffer, cursor, pcmLen);
 
 	return {
 		sampleRate,
 		baseF0: Number.isFinite(baseF0) && baseF0 > 20 ? baseF0 : 220,
-		f0: new Float32Array(copy.buffer, 24, frames),
-		rms: new Float32Array(copy.buffer, 24 + frames * 4, frames),
-		pcm: new Float32Array(copy.buffer, 24 + frames * 8, pcmLen)
+		f0,
+		rms,
+		ap,
+		sp,
+		pcm
 	};
 }
 
-// ---- TD-PSOLA note synthesizer ---------------------------------------------
+// ---- WORLD-style Minimum-Phase Spectral Singing Synthesizer -----------------
 
-function findSteadyVowelMs(features: SampleFeatures, srcAttackEndMs: number): number {
+function findSteadyVowelEndMs(features: SampleFeatures, srcAttackEndMs: number): number {
 	const totalFrames = features.f0.length;
 	if (totalFrames === 0) return srcAttackEndMs + 100;
 	const totalMs = totalFrames * FRAME_PERIOD_MS;
@@ -613,18 +812,27 @@ function findSteadyVowelMs(features: SampleFeatures, srcAttackEndMs: number): nu
 		Math.floor(srcAttackEndMs / FRAME_PERIOD_MS),
 		Math.max(0, totalFrames - 1)
 	);
-	let bestFrame = startFrame;
-	let bestScore = -Infinity;
+	let maxVoicedRms = 0;
 	for (let k = startFrame; k < totalFrames; k++) {
-		const voiced = features.f0[k] > F0_FLOOR;
-		const energyDb = 20 * Math.log10(Math.max(1e-6, features.rms[k]));
-		const score = voiced ? energyDb + 12 : energyDb;
-		if (score > bestScore) {
-			bestScore = score;
-			bestFrame = k;
+		if (features.f0[k] > F0_FLOOR && features.rms[k] > maxVoicedRms) {
+			maxVoicedRms = features.rms[k];
 		}
 	}
-	return clamp(bestFrame * FRAME_PERIOD_MS, srcAttackEndMs, Math.max(srcAttackEndMs, totalMs - 10));
+	if (maxVoicedRms <= 0) {
+		return clamp(totalMs - 20, srcAttackEndMs, Math.max(srcAttackEndMs, totalMs - 10));
+	}
+	const threshold = maxVoicedRms * 0.35;
+	let endFrame = startFrame;
+	for (let k = startFrame; k < totalFrames; k++) {
+		if (features.f0[k] > F0_FLOOR && features.rms[k] >= threshold) {
+			endFrame = k;
+		}
+	}
+	return clamp(
+		Math.max(endFrame * FRAME_PERIOD_MS, srcAttackEndMs + 80),
+		srcAttackEndMs,
+		Math.max(srcAttackEndMs, totalMs - 10)
+	);
 }
 
 function evalPitchDevCents(
@@ -697,7 +905,7 @@ export function renderNoteTs(
 	} else if (srcCutoffMs < 0) {
 		srcVowelSteadyMs = Math.max(srcAttackEndMs, Math.min(wavTotalMs, srcOffsetMs - srcCutoffMs));
 	} else {
-		srcVowelSteadyMs = findSteadyVowelMs(features, srcAttackEndMs);
+		srcVowelSteadyMs = findSteadyVowelEndMs(features, srcAttackEndMs);
 	}
 	srcVowelSteadyMs = clamp(
 		srcVowelSteadyMs,
@@ -754,8 +962,10 @@ export function renderNoteTs(
 		frameGain[k] = gain;
 	}
 
-	// Source time lookup in ms for any output sample time (handles consonant speed + steady-vowel ping-pong loop).
+	// Source time lookup in ms (cosine-eased sustain loop avoids abrupt spectral discontinuities).
 	const vowelSpanMs = Math.max(25, srcVowelSteadyMs - srcAttackEndMs);
+	const loopSpan = clamp(vowelSpanMs * 0.55, 20, 220);
+	const loopStart = Math.max(srcAttackEndMs, srcVowelSteadyMs - loopSpan);
 	const srcMsAt = (outMs: number): number => {
 		if (outMs < renderPreutterMs) {
 			return clamp(srcOffsetMs + skipSrcMs + outMs / scale, 0, wavTotalMs - 1);
@@ -767,95 +977,222 @@ export function renderNoteTs(
 		if (tInVowel <= vowelSpanMs) {
 			return clamp(srcAttackEndMs + tInVowel, 0, wavTotalMs - 1);
 		}
-		// Smooth ping-pong sustain across the steady vowel section so long notes never end abruptly or buzz.
-		const loopSpan = Math.max(20, vowelSpanMs * 0.55);
-		const loopStart = Math.max(srcAttackEndMs, srcVowelSteadyMs - loopSpan);
-		const excess = (tInVowel - vowelSpanMs) % (2 * loopSpan);
-		const pos = excess <= loopSpan ? srcVowelSteadyMs - excess : loopStart + (excess - loopSpan);
-		return clamp(pos, 0, wavTotalMs - 1);
+		const phase = ((tInVowel - vowelSpanMs) / loopSpan) * Math.PI;
+		const blend = 0.5 - 0.5 * Math.cos(phase);
+		return clamp(lerp(srcVowelSteadyMs, loopStart, blend), 0, wavTotalMs - 1);
 	};
 
-	// TD-PSOLA synthesis into `pcm` + window-sum `norm` for unity gain.
+	const totalSrcFrames = features.f0.length;
+	const formantShift = Math.pow(2, clamp(flags.gender, -100, 100) / 120);
+	const breathAdjust = (flags.breathiness - 50) / 50;
+	const aperiodicExtra = flags.aperiodicMix / 100;
+
+	const sampleFeaturesAt = (sMs: number, outSp: Float64Array) => {
+		const fPos = clamp(sMs / FRAME_PERIOD_MS, 0, Math.max(0, totalSrcFrames - 1));
+		const f0Idx = Math.floor(fPos);
+		const f1Idx = Math.min(totalSrcFrames - 1, f0Idx + 1);
+		const frac = fPos - f0Idx;
+		const row0 = f0Idx * SP_BINS;
+		const row1 = f1Idx * SP_BINS;
+		for (let b = 0; b < SP_BINS; b++) {
+			outSp[b] = lerp(features.sp[row0 + b], features.sp[row1 + b], frac);
+		}
+		const rms = lerp(features.rms[f0Idx], features.rms[f1Idx], frac);
+		const ap = lerp(features.ap[f0Idx], features.ap[f1Idx], frac);
+		const v0 = features.f0[f0Idx] > F0_FLOOR ? 1 : 0;
+		const v1 = features.f0[f1Idx] > F0_FLOOR ? 1 : 0;
+		const voiced = lerp(v0, v1, frac);
+		return { rms, ap, voiced };
+	};
+
+	const evalLogSpectrum513 = (spGrid: Float64Array, out513: Float64Array) => {
+		for (let k = 0; k <= FFT_HALF; k++) {
+			const srcK = clamp(k / formantShift, 0, FFT_HALF);
+			const gPos = clamp(fftIndexToGridPos(srcK), 0, SP_BINS - 1);
+			const g0 = Math.floor(gPos);
+			const g1 = Math.min(SP_BINS - 1, g0 + 1);
+			out513[k] = lerp(spGrid[g0], spGrid[g1], gPos - g0);
+		}
+	};
+
 	const pcm = new Float32Array(outSamples);
-	const norm = new Float32Array(outSamples);
 	const srcPcm = features.pcm;
 	const srcLen = srcPcm.length;
-	const basePeriodSamples = SAMPLE_RATE / clamp(features.baseF0, F0_FLOOR, F0_CEIL);
 
-	let outCursor = 0;
-	let noiseState = 0x12345678;
-	const breathAmp =
-		clamp((flags.breathiness - 50) / 100, 0, 0.5) + (flags.aperiodicMix / 100) * 0.25;
+	const spBuf = new Float64Array(SP_BINS);
+	const log513 = new Float64Array(FFT_HALF + 1);
+	const re = new Float64Array(FFT_SIZE);
+	const im = new Float64Array(FFT_SIZE);
 
-	while (outCursor < outSamples) {
-		const outMs = (outCursor / SAMPLE_RATE) * 1000;
-		const frameIdx = clamp(Math.floor(outMs / FRAME_PERIOD_MS), 0, totalFrames - 1);
-		const targetF0 = f0Contour[frameIdx];
+	// 1) Pitch-synchronous minimum-phase harmonic synthesis (WORLD-style excitation at exact targetF0).
+	let pulsePos = 0;
+	while (pulsePos < outSamples) {
+		const outMs = (pulsePos / SAMPLE_RATE) * 1000;
+		const fIdx = clamp(Math.floor(outMs / FRAME_PERIOD_MS), 0, totalFrames - 1);
+		const fNext = Math.min(totalFrames - 1, fIdx + 1);
+		const fFrac = clamp((outMs - fIdx * FRAME_PERIOD_MS) / FRAME_PERIOD_MS, 0, 1);
+		const targetF0 = lerp(f0Contour[fIdx], f0Contour[fNext], fFrac);
 		const targetPeriod = SAMPLE_RATE / targetF0;
 
 		const sMs = srcMsAt(outMs);
-		const sFrame = clamp(Math.floor(sMs / FRAME_PERIOD_MS), 0, features.f0.length - 1);
-		const srcF0 = features.f0[sFrame] > F0_FLOOR ? features.f0[sFrame] : features.baseF0;
-		const localPeriod = SAMPLE_RATE / clamp(srcF0, F0_FLOOR, F0_CEIL);
+		const { rms, ap, voiced } = sampleFeaturesAt(sMs, spBuf);
+		const effAp = clamp(ap * (1 + breathAdjust) + aperiodicExtra, 0, 1);
+		const harmMix = clamp((1 - effAp) * voiced, 0, 1);
 
-		// During consonant attack, lean toward 1:1 period preservation so plosives/fricatives stay crisp.
-		const inConsonant = outMs < renderPreutterMs + outFixedConsonantMs;
-		const hop = inConsonant
-			? Math.round(lerp(localPeriod, targetPeriod, 0.35))
-			: Math.round(targetPeriod);
-		const halfWin = Math.max(
-			48,
-			Math.round(inConsonant ? localPeriod : Math.max(basePeriodSamples, targetPeriod))
-		);
-		const winLen = halfWin * 2;
-		const srcCenter = Math.round((sMs / 1000) * SAMPLE_RATE);
+		if (harmMix > 0.01 && rms > 1e-4) {
+			evalLogSpectrum513(spBuf, log513);
 
-		for (let j = -halfWin; j < halfWin; j++) {
-			const oi = Math.round(outCursor) + j;
-			if (oi < 0 || oi >= outSamples) continue;
-			const si = clamp(srcCenter + j, 0, srcLen - 1);
-			const w = 0.5 * (1 - Math.cos((2 * Math.PI * (j + halfWin)) / winLen));
-			let s = srcPcm[si];
-			if (breathAmp > 0) {
-				noiseState = (Math.imul(noiseState, 1664525) + 1013904223) >>> 0;
-				const n = (noiseState / 0xffffffff - 0.5) * 0.15 * features.rms[sFrame];
-				s = s * (1 - breathAmp * 0.4) + n * breathAmp;
+			// Real cepstrum -> minimum-phase spectrum.
+			re[0] = log513[0];
+			re[FFT_HALF] = log513[FFT_HALF];
+			for (let k = 1; k < FFT_HALF; k++) {
+				const v = log513[k];
+				re[k] = v;
+				re[FFT_SIZE - k] = v;
 			}
-			pcm[oi] += s * w;
-			norm[oi] += w;
+			im.fill(0);
+			fft1024(re, im, true);
+
+			for (let q = 1; q < FFT_HALF; q++) re[q] *= 2;
+			for (let q = FFT_HALF + 1; q < FFT_SIZE; q++) re[q] = 0;
+			im.fill(0);
+			fft1024(re, im, false);
+
+			const baseIdx = Math.floor(pulsePos);
+			const subFrac = pulsePos - baseIdx;
+			const phaseStep = (-2 * Math.PI * subFrac) / FFT_SIZE;
+
+			const m0 = Math.exp(clamp(re[0], -20, 20));
+			const mNyq = Math.exp(clamp(re[FFT_HALF], -20, 20));
+			re[0] = m0;
+			im[0] = 0;
+			re[FFT_HALF] = mNyq;
+			im[FFT_HALF] = 0;
+			for (let k = 1; k < FFT_HALF; k++) {
+				const mag = Math.exp(clamp(re[k], -20, 20));
+				const phase = im[k] + k * phaseStep;
+				const xr = mag * Math.cos(phase);
+				const xi = mag * Math.sin(phase);
+				re[k] = xr;
+				im[k] = xi;
+				re[FFT_SIZE - k] = xr;
+				im[FFT_SIZE - k] = -xi;
+			}
+			fft1024(re, im, true);
+
+			// Smoothly taper tail of the 1024-sample impulse to zero & normalize RMS energy.
+			let energy = 0;
+			const maxPulseLen = Math.min(FFT_SIZE, Math.max(256, Math.round(targetPeriod * 2.5)));
+			const taperStart = Math.floor(maxPulseLen * 0.72);
+			for (let n = 0; n < maxPulseLen; n++) {
+				let s = re[n];
+				if (n >= taperStart) {
+					const w = 0.5 * (1 + Math.cos((Math.PI * (n - taperStart)) / (maxPulseLen - taperStart)));
+					s *= w;
+					re[n] = s;
+				}
+				energy += s * s;
+			}
+			const expectedRms = Math.sqrt(energy / Math.max(1, targetPeriod));
+			const ampScale = (rms * harmMix) / Math.max(expectedRms, 1e-6);
+
+			for (let n = 0; n < maxPulseLen; n++) {
+				const oi = baseIdx + n;
+				if (oi >= outSamples) break;
+				pcm[oi] += re[n] * ampScale;
+			}
 		}
 
-		outCursor += Math.max(32, hop * 0.5);
+		pulsePos += targetPeriod;
 	}
 
-	// Normalize overlap-add and apply frame gain, gender tilt, volume & crossfade envelopes.
-	const genderAmt = clamp(flags.gender, -100, 100) / 100;
-	let prevRaw = 0;
-	let lpState = 0;
-	for (let i = 0; i < outSamples; i++) {
-		let s = norm[i] > 1e-4 ? pcm[i] / norm[i] : 0;
+	// 2) Aperiodic breathiness + crisp unvoiced consonants (220-sample / 5ms OLA).
+	const hop = 220;
+	const winLen = HANN_440.length; // 440 samples -> unity sum every 220 samples
+	const halfWin = winLen >> 1;
+	let noiseState = 0x12345678;
 
-		if (genderAmt !== 0) {
-			if (genderAmt > 0) {
-				// Positive g: brighter / higher formant tilt.
-				const hp = s - prevRaw;
-				prevRaw = s;
-				s = s + genderAmt * 0.35 * hp;
-			} else {
-				// Negative g: warmer / deeper formant tilt.
-				lpState = lerp(lpState, s, 0.35);
-				s = lerp(s, lpState, -genderAmt * 0.65);
+	for (let center = 0; center < outSamples; center += hop) {
+		const outMs = (center / SAMPLE_RATE) * 1000;
+		const sMs = srcMsAt(outMs);
+		const { rms, ap, voiced } = sampleFeaturesAt(sMs, spBuf);
+		const effAp = clamp(ap * (1 + breathAdjust) + aperiodicExtra, 0, 1);
+		const apMix = clamp(1 - voiced * (1 - effAp), 0, 1);
+		if (apMix <= 0.015 || rms <= 1e-4) continue;
+
+		const inConsonant = outMs < renderPreutterMs + outFixedConsonantMs;
+		if (inConsonant && voiced < 0.35 && Math.abs(flags.gender) < 5) {
+			// Preserve razor-sharp plosives/fricatives directly from the sample during unvoiced attacks.
+			const srcCenter = Math.round((sMs / 1000) * SAMPLE_RATE);
+			for (let j = 0; j < winLen; j++) {
+				const oi = center - halfWin + j;
+				if (oi < 0 || oi >= outSamples) continue;
+				const si = clamp(srcCenter - halfWin + j, 0, srcLen - 1);
+				pcm[oi] += srcPcm[si] * HANN_440[j] * apMix;
 			}
+			continue;
 		}
 
+		evalLogSpectrum513(spBuf, log513);
+		re[0] = Math.exp(clamp(log513[0], -20, 20));
+		im[0] = 0;
+		re[FFT_HALF] = Math.exp(clamp(log513[FFT_HALF], -20, 20));
+		im[FFT_HALF] = 0;
+		for (let k = 1; k < FFT_HALF; k++) {
+			noiseState = (Math.imul(noiseState, 1664525) + 1013904223) >>> 0;
+			const angle = (noiseState / 0xffffffff) * 2 * Math.PI;
+			const mag = Math.exp(clamp(log513[k], -20, 20));
+			const xr = mag * Math.cos(angle);
+			const xi = mag * Math.sin(angle);
+			re[k] = xr;
+			im[k] = xi;
+			re[FFT_SIZE - k] = xr;
+			im[FFT_SIZE - k] = -xi;
+		}
+		fft1024(re, im, true);
+
+		let energy = 0;
+		for (let j = 0; j < winLen; j++) {
+			const v = re[j] * HANN_440[j];
+			energy += v * v;
+		}
+		const segRms = Math.sqrt(energy / hop);
+		const nScale = (rms * apMix) / Math.max(segRms, 1e-6);
+
+		for (let j = 0; j < winLen; j++) {
+			const oi = center - halfWin + j;
+			if (oi < 0 || oi >= outSamples) continue;
+			pcm[oi] += re[j] * HANN_440[j] * nScale;
+		}
+	}
+
+	// 3) Apply dynamic frame gain (A / fe / gw), peak compression (P flag), & soft limiting.
+	let rawPeak = 0;
+	for (let i = 0; i < outSamples; i++) {
 		const fPos = ((i / SAMPLE_RATE) * 1000) / FRAME_PERIOD_MS;
 		const fLo = clamp(Math.floor(fPos), 0, totalFrames - 1);
 		const fHi = clamp(fLo + 1, 0, totalFrames - 1);
 		const g = lerp(frameGain[fLo], frameGain[fHi], fPos - fLo);
-		pcm[i] = Number.isFinite(s) ? s * g * volume : 0;
+		const val = pcm[i] * g * volume;
+		const finite = Number.isFinite(val) ? val : 0;
+		pcm[i] = finite;
+		const abs = Math.abs(finite);
+		if (abs > rawPeak) rawPeak = abs;
 	}
 
-	// Crossfade envelopes (equal-power quarter-sine, matching resample.rs).
+	if (rawPeak > 1e-5) {
+		const pAmt = flags.peakCompression / 100;
+		const targetCeiling = 0.85;
+		const peakScale = rawPeak > targetCeiling ? lerp(1, targetCeiling / rawPeak, pAmt) : 1;
+		for (let i = 0; i < outSamples; i++) {
+			let s = pcm[i] * peakScale;
+			if (s > 0.9) s = 0.9 + 0.08 * Math.tanh((s - 0.9) / 0.25);
+			else if (s < -0.9) s = -0.9 - 0.08 * Math.tanh((-s - 0.9) / 0.25);
+			pcm[i] = s;
+		}
+	}
+
+	// 4) Crossfade envelopes (equal-power quarter-sine, matching resample.rs).
 	const fadeInMs = Math.min(timing.fadeIn, totalRenderMs);
 	const fadeOutMs = Math.min(timing.fadeOut, soundEndMs);
 	if (fadeInMs > 0) {

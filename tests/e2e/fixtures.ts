@@ -5,7 +5,7 @@ import { VOICEBANK_ZIP } from './global-setup';
 export { expect };
 
 // The debug handle is deliberately loosely typed: tests poke at internals.
-type WebTau = any;
+type OpenwebZHandle = any;
 
 /** Convenience wrapper around the running app (opened with `?debug`). */
 export class App {
@@ -19,10 +19,10 @@ export class App {
 		await this.page.waitForSelector('canvas');
 	}
 
-	/** Runs `fn` in the page with the `window.webtau` debug handle. */
-	eval<R, A = undefined>(fn: (w: WebTau, arg: A) => R | Promise<R>, arg?: A): Promise<R> {
+	/** Runs `fn` in the page with the `window.openwebz` debug handle. */
+	eval<R, A = undefined>(fn: (w: OpenwebZHandle, arg: A) => R | Promise<R>, arg?: A): Promise<R> {
 		return this.page.evaluate(
-			([src, a]) => new Function('w', 'a', `return (${src})(w, a)`)((window as any).webtau, a),
+			([src, a]) => new Function('w', 'a', `return (${src})(w, a)`)((window as any).openwebz, a),
 			[fn.toString(), arg] as const
 		) as Promise<R>;
 	}
@@ -31,7 +31,7 @@ export class App {
 		// On a phone the voicebank panel lives in a sheet.
 		if (this.isMobile) await this.page.getByRole('button', { name: 'Voicebank' }).tap();
 		await this.page.setInputFiles('input[type=file][accept*=zip]', VOICEBANK_ZIP);
-		await this.page.waitForFunction(() => (window as any).webtau.voicebank.current);
+		await this.page.waitForFunction(() => (window as any).openwebz.voicebank.current);
 		if (this.isMobile) {
 			await this.page.touchscreen.tap(190, 60);
 			await this.page.getByRole('dialog').waitFor({ state: 'detached' });

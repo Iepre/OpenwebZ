@@ -607,7 +607,9 @@ test.describe('history and gestures of the curve', () => {
 			])
 		).toEqual(['note', 'points', 'pitch']);
 		await page.waitForTimeout(300);
-		const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('webtau:settings')!));
+		const stored = await page.evaluate(() =>
+			JSON.parse(localStorage.getItem('openwebz:settings')!)
+		);
 		expect(stored).toMatchObject({ pitchMode: 'note', pitchStyle: 'points', eraserMode: 'pitch' });
 	});
 });

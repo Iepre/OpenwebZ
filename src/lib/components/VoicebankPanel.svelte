@@ -226,46 +226,11 @@
 		<div class="empty">
 			<Icon name="mic" size={30} />
 			<p>No voicebank loaded</p>
-			<span class="hint">WebTAU works with UTAU voicebanks (oto.ini + WAV samples).</span>
-			<div class="starter-row">
-				<button
-					class="btn"
-					disabled={voicebank.loading}
-					onclick={() => voicebank.installStarter('standard')}
-				>
-					Load Standard Starter
-				</button>
-				<button
-					class="btn"
-					disabled={voicebank.loading}
-					onclick={() => voicebank.installStarter('soft')}
-				>
-					Load Soft Starter
-				</button>
-			</div>
+			<span class="hint">
+				OpenwebZ works with UTAU voicebanks (oto.ini + WAV samples). Load a .zip, folder, or URL
+				above.
+			</span>
 		</div>
-	{/if}
-
-	{#if vb}
-		<section>
-			<h3>Built-in starter banks</h3>
-			<div class="starter-row">
-				<button
-					class="btn"
-					disabled={voicebank.loading}
-					onclick={() => voicebank.installStarter('standard')}
-				>
-					+ Standard CV
-				</button>
-				<button
-					class="btn"
-					disabled={voicebank.loading}
-					onclick={() => voicebank.installStarter('soft')}
-				>
-					+ Soft CV
-				</button>
-			</div>
-		</section>
 	{/if}
 </div>
 
@@ -380,17 +345,6 @@
 	}
 	.icon-btn.sm.danger:hover {
 		color: var(--danger, #ff5d73);
-	}
-	.starter-row {
-		display: flex;
-		gap: 6px;
-		flex-wrap: wrap;
-		width: 100%;
-	}
-	.starter-row .btn {
-		flex: 1;
-		font-size: 12px;
-		padding: 0 8px;
 	}
 	.card {
 		position: relative;

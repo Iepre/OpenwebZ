@@ -2,7 +2,7 @@
 import { assets, immutable } from '$app/manifest';
 import { self as worker } from '$app/service-worker';
 
-// Caches the app shell and the audio engine so WebTAU opens instantly and
+// Caches the app shell and the audio engine so OpenwebZ opens instantly and
 // works offline after the first visit. Voicebank analysis results live in
 // IndexedDB and are independent from this cache.
 
@@ -11,7 +11,7 @@ const toUrl = (path: string) => new URL(path.replace(/^\//, ''), scope).href;
 
 const ASSETS = [...immutable, ...assets].map((a) => toUrl(a.path));
 // The hashed file names change with every build, so they double as a version.
-const CACHE = `webtau-${ASSETS.reduce((h, s) => (Math.imul(h, 31) + s.length + s.charCodeAt(s.length - 5)) | 0, 7).toString(36)}`;
+const CACHE = `openwebz-${ASSETS.reduce((h, s) => (Math.imul(h, 31) + s.length + s.charCodeAt(s.length - 5)) | 0, 7).toString(36)}`;
 
 worker.addEventListener('install', (event) => {
 	event.waitUntil(

@@ -126,6 +126,10 @@
 		<label class="check"
 			><input type="checkbox" bind:checked={settings.data.showNoteNames} /> Show note names on long notes</label
 		>
+		<label class="check"
+			><input type="checkbox" bind:checked={settings.data.showNoteWaveforms} /> Show mini waveforms inside
+			notes</label
+		>
 
 		<h3>Pitch</h3>
 		<div class="field">
@@ -338,12 +342,12 @@
 		</table>
 	</Dialog>
 {:else if ui.dialog === 'about'}
-	<Dialog title="About WebTAU" onclose={ui.closeDialog} width={460}>
+	<Dialog title="About OpenwebZ" onclose={ui.closeDialog} width={460}>
 		<div class="about">
 			<img src={asset('favicon.png')} alt="" width="64" height="64" />
 			<p>
-				<strong>WebTAU</strong> is a browser-based vocal synthesizer for UTAU voicebanks. Everything runs
-				locally in your browser — no uploads.
+				<strong>OpenwebZ</strong> is a browser-based vocal synthesizer for UTAU voicebanks. Everything
+				runs locally in your browser — no uploads.
 			</p>
 			<p class="hint">
 				Engine based on <a
@@ -358,8 +362,8 @@
 				<a href="https://github.com/mmorise/World" target="_blank" rel="noreferrer">WORLD</a> vocoder.
 			</p>
 			<p>
-				<a href="https://github.com/charl1e7/webtau" target="_blank" rel="noreferrer"
-					>github.com/charl1e7/webtau</a
+				<a href="https://github.com/Iepre/OpenwebZ" target="_blank" rel="noreferrer"
+					>github.com/Iepre/OpenwebZ</a
 				>
 				{#if voicebank.current}· voicebank: {voicebank.current.name}{/if}
 			</p>

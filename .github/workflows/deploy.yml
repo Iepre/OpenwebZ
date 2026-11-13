@@ -52,14 +52,21 @@ jobs:
         run: ./build.sh release
 
       - name: Build the web app
-        env:
-          BASE_PATH: /webtau
-        run: npm run build
+        run: |
+          REPO_NAME="${{ github.event.repository.name }}"
+          if [[ "$REPO_NAME" == *.github.io ]]; then
+            export BASE_PATH=""
+          else
+            export BASE_PATH="/${REPO_NAME:-OpenwebZ}"
+          fi
+          npm run build
+          cp build/index.html build/404.html
+          touch build/.nojekyll
 
       - name: Upload site as a downloadable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: webtau-site
+          name: openwebz-site
           path: build
           retention-days: 14
 

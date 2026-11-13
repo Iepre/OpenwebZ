@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="./static/favicon.png" alt="WebTAU logo" width="72" height="72" />
-  <h1>WebTAU</h1>
+  <img src="./static/favicon.png" alt="OpenwebZ logo" width="72" height="72" />
+  <h1>OpenwebZ</h1>
 
   <p>
     A browser-based vocal synthesizer for <b>UTAU voicebanks</b>.<br />
@@ -8,12 +8,12 @@
   </p>
 
   <p>
-    <a href="https://charl1e7.github.io/webtau/"><strong>🌐 Open WebTAU</strong></a>
+    <a href="https://iepre.github.io/OpenwebZ/"><strong>🌐 Open OpenwebZ</strong></a>
   </p>
 
-  <img src="./docs/screenshot.png" alt="WebTAU on desktop" width="860" />
+  <img src="./docs/screenshot.png" alt="OpenwebZ on desktop" width="860" />
   <br />
-  <img src="./docs/screenshot-mobile.png" alt="WebTAU on a phone" width="260" />
+  <img src="./docs/screenshot-mobile.png" alt="OpenwebZ on a phone" width="260" />
 </div>
 
 ---
@@ -43,15 +43,16 @@
   erase only notes or only pitch.
 - **Import / export** — UST (import & export, pitch curves, vibrato, tempo changes), **USTX** (OpenUtau
   projects: tracks, notes, pitch points and shapes, vibrato, velocity / volume / gender / breath, the
-  `pitd` pitch curve ⇄ the track pitch curve; written as USTX 0.6 so every OpenUtau can open it), MIDI (import with
-  track picker & lyrics, export), project files (`.webtau.json`), WAV export.
+  `pitd` pitch curve ⇄ the track pitch curve; written as USTX 0.6 so every OpenUtau can open it), **SVP** (Synthesizer V Studio),
+  **TSSLN** (VoiSona), **CCS** (CeVIO), **VPR** (VOCALOID5+), **VSQX** (VOCALOID), MIDI (import with
+  track picker & lyrics, export), project files (`.openwebz.json`), WAV export.
 - **Lyrics & plugins** — type `ra` for a kana voicebank (or `ら` for a romaji one), or `+` to continue the previous
   note, `R` for a rest, `ka[kya]` to force an alias; VCV banks get the right `a ら` alias from the previous
   note and `prefix.map` is honoured. Lyrics the voicebank cannot sing are marked right away, the suggestion list
   shows readings in both scripts, and importing a project opens _Fix lyrics_ with the nearest alias for each
   unknown syllable (one undo step). Edit ▸ Lyric tools converts between hiragana, katakana and romaji. All of it
   is built from small plugins you can switch off in Settings, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- **Tracks** — several tracks with mute / solo / volume / colour (all share the loaded voicebank), VSQX import,
+- **Tracks & singers** — several tracks with mute / solo / volume / colour and independent remembered singer assignment per track, VSQX import,
   tempo map with markers you can drag on the ruler, time signatures, batch lyric filling (kana → morae).
 - **Resampler flags** — `B` breathiness, `t` pitch offset, `g` gender (formant shift), `A` amplitude
   following pitch, `fe`/`fl`/`fv`/`fp` vocal fry; click a piano key to hear a preview of the note.
@@ -63,8 +64,8 @@ Requirements: Node 22+, Rust (stable) with the `wasm32-unknown-emscripten` targe
 [Emscripten](https://emscripten.org/) 4.x (`emsdk`) for the engine.
 
 ```bash
-git clone --recursive https://github.com/charl1e7/webtau   # the WORLD vocoder is a git submodule
-cd webtau
+git clone --recursive https://github.com/Iepre/OpenwebZ   # the WORLD vocoder is a git submodule
+cd OpenwebZ
 npm install
 
 # build the engine (Rust -> WebAssembly) into src/lib/engine/wasm
@@ -77,14 +78,14 @@ npm run dev                   # http://localhost:5173
 | Command                                    | What it does                                  |
 | ------------------------------------------ | --------------------------------------------- |
 | `npm run dev` / `npm run build`            | Vite dev server / production build (`build/`) |
+| `npm run build:pages`                      | Static GitHub Pages build (`/OpenwebZ` + 404) |
 | `npm run lint` · `npm run check`           | Prettier + ESLint · svelte-check              |
 | `npm test`                                 | Unit tests (core, UST, MIDI, project files)   |
 | `npm run test:e2e`                         | Browser tests (Playwright) on desktop + phone |
 | `cargo test -p w-synth --release`          | Unit tests of the Rust engine                 |
 | `node scripts/bench-analysis.mjs <dir> 15` | Benchmark of the sample analyzer in Node      |
 
-Set `BASE_PATH=/webtau` when building for GitHub Pages. Opening the app with `?debug` exposes the
-state modules as `window.webtau` for debugging.
+Set `BASE_PATH=/OpenwebZ` (or run `npm run build:pages`) when building for GitHub Pages; the included `.github/workflows/deploy.yml` workflow automatically builds and publishes `build/` to GitHub Pages on pushes to `main` (enable **Settings → Pages → Source: GitHub Actions**). Opening the app with `?debug` exposes the state modules as `window.openwebz` for debugging.
 
 ### Testing
 
@@ -134,7 +135,7 @@ On top of that, the voicebank no longer has to be analyzed up front, and results
 
 ## Feedback
 
-Questions, ideas or bugs? Please [open an issue](https://github.com/charl1e7/webtau/issues/new).
+Questions, ideas or bugs? Please [open an issue](https://github.com/Iepre/OpenwebZ/issues/new).
 
 ## Credits
 

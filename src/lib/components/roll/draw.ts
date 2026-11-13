@@ -98,6 +98,7 @@ export interface Frame {
 	beatTicks: number;
 	gridTicks: number;
 	showNames: boolean;
+	waveforms?: ReadonlyMap<string, Float32Array>;
 	unknown: ReadonlySet<string>;
 	hoverId: string | null;
 	/** Colour and audibility per track id. */
@@ -324,6 +325,13 @@ function drawNotes(ctx: CanvasRenderingContext2D, f: Frame) {
 			ctx.fill();
 		}
 
+		const wave = !isRest ? f.waveforms?.get(n.id) : undefined;
+		const hasWave = Boolean(wave && wave.length > 0 && b.w >= 10 && b.h >= 12);
+		const liftLabel = hasWave && b.h >= 20;
+		if (hasWave && wave) {
+			drawNoteWaveform(ctx, b, wave, radius, selected, dimmed, !liftLabel);
+		}
+
 		if (b.w > 14 && n.id !== f.editingLyricId) {
 			ctx.save();
 			ctx.beginPath();
@@ -333,12 +341,71 @@ function drawNotes(ctx: CanvasRenderingContext2D, f: Frame) {
 			ctx.shadowColor = selected ? 'transparent' : 'rgba(0,0,0,0.35)';
 			ctx.shadowBlur = 2;
 			const label = f.showNames && b.w > 70 ? `${n.lyric}  ${noteName(n.pitch)}` : n.lyric;
-			ctx.fillText(label, b.x + (selected && f.touch ? 14 : 6), b.y + b.h / 2 + 0.5);
+			const labelY = liftLabel ? b.y + Math.max(7, b.h * 0.3) : b.y + b.h / 2 + 0.5;
+			ctx.fillText(label, b.x + (selected && f.touch ? 14 : 6), labelY);
 			ctx.restore();
 		}
 
 		if (selected && b.w > 12) drawGrips(ctx, f, b);
 	}
+	ctx.restore();
+}
+
+function drawNoteWaveform(
+	ctx: CanvasRenderingContext2D,
+	b: { x: number; y: number; w: number; h: number },
+	wave: Float32Array,
+	radius: number,
+	selected: boolean,
+	dimmed: number,
+	compact: boolean
+) {
+	const x0 = b.x + 2;
+	const spanW = b.w - 4;
+	if (spanW < 4) return;
+
+	const bandTop = compact ? b.y + b.h * 0.48 : b.y + b.h * 0.54;
+	const bandBottom = b.y + b.h - 2;
+	const midY = (bandTop + bandBottom) * 0.5;
+	const halfH = Math.max(1.5, (bandBottom - bandTop) * 0.48);
+
+	const n = wave.length;
+	const steps = Math.max(6, Math.min(n, Math.round(spanW)));
+
+	ctx.save();
+	ctx.beginPath();
+	ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.max(1, radius - 0.5));
+	ctx.clip();
+
+	const fade = dimmed * (compact ? 0.55 : 0.9);
+	ctx.globalAlpha = fade;
+
+	// Center baseline hairline
+	ctx.strokeStyle = selected ? 'rgba(58, 10, 31, 0.14)' : 'rgba(255, 255, 255, 0.14)';
+	ctx.lineWidth = 1;
+	ctx.beginPath();
+	ctx.moveTo(x0, Math.round(midY) + 0.5);
+	ctx.lineTo(x0 + spanW, Math.round(midY) + 0.5);
+	ctx.stroke();
+
+	// Crisp vertical waveform bars (1px spacing, SynthV/DAW style)
+	ctx.strokeStyle = selected ? 'rgba(58, 10, 31, 0.36)' : 'rgba(255, 255, 255, 0.38)';
+	ctx.lineWidth = 1;
+	ctx.beginPath();
+	for (let i = 0; i < steps; i++) {
+		const idx0 = Math.floor((i * n) / steps);
+		const idx1 = Math.max(idx0 + 1, Math.floor(((i + 1) * n) / steps));
+		let peak = 0;
+		for (let j = idx0; j < idx1 && j < n; j++) {
+			if (wave[j] > peak) peak = wave[j];
+		}
+		const px = Math.round(x0 + (steps > 1 ? (i / (steps - 1)) * spanW : spanW * 0.5)) + 0.5;
+		const amp = Math.max(0.6, peak * halfH);
+		ctx.moveTo(px, midY - amp);
+		ctx.lineTo(px, midY + amp);
+	}
+	ctx.stroke();
+
 	ctx.restore();
 }
 

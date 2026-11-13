@@ -242,13 +242,23 @@ export function mainMenu(): MenuItem[] {
 		sep,
 		{ label: 'Settings', icon: 'settings', action: () => ui.openDialog('settings') },
 		{ label: 'Keyboard shortcuts', icon: 'keyboard', action: () => ui.openDialog('shortcuts') },
-		{ label: 'About WebTAU', icon: 'info', action: () => ui.openDialog('about') }
+		{ label: 'About OpenwebZ', icon: 'info', action: () => ui.openDialog('about') }
 	];
 }
 
 /** Menu to switch, add and configure tracks. */
 export function trackMenu(): MenuItem[] {
 	const active = project.tracks.find((t) => t.id === project.activeTrack) ?? project.tracks[0];
+	const singerOptions = [
+		...(voicebank.current && !voicebank.library.some((b) => b.id === voicebank.current?.id)
+			? [{ id: voicebank.current.id, name: voicebank.current.name }]
+			: []),
+		...voicebank.library.map((b) => ({ id: b.id, name: b.name }))
+	];
+	const currentSingerId = active.singer
+		? (voicebank.findMeta(active.singer)?.id ?? active.singer)
+		: '';
+
 	return [
 		...project.tracks.map((t): MenuItem => ({
 			label: `${t.name}${t.mute ? ' (muted)' : ''}${t.solo ? ' (solo)' : ''}`,
@@ -257,6 +267,27 @@ export function trackMenu(): MenuItem[] {
 		})),
 		sep,
 		{ label: 'Add track', icon: 'plus', action: () => project.addTrack() },
+		{
+			label: `Singer (${voicebank.singerLabel(active.singer)})`,
+			icon: 'mic',
+			children: [
+				{
+					label: `Active voicebank (${voicebank.current?.name ?? 'None'})`,
+					checked: !active.singer,
+					action: () => void voicebank.setTrackSinger(active.id, '')
+				},
+				...(singerOptions.length
+					? [
+							sep,
+							...singerOptions.map((b): MenuItem => ({
+								label: b.name,
+								checked: currentSingerId === b.id,
+								action: () => void voicebank.setTrackSinger(active.id, b.id)
+							}))
+						]
+					: [])
+			]
+		},
 		{
 			label: active.mute ? 'Unmute active track' : 'Mute active track',
 			action: () => project.updateTrack(active.id, { mute: !active.mute })

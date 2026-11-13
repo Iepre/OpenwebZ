@@ -2,11 +2,11 @@ import JSZip from 'jszip';
 import { encodeText } from '#lib/io/text';
 import type { SampleFile, Voicebank } from './types';
 
-const DB_NAME = 'webtau-voicebanks';
+const DB_NAME = 'openwebz-voicebanks';
 const DB_VERSION = 1;
 const STORE_BANKS = 'banks';
 const STORE_SAMPLES = 'samples';
-const ACTIVE_KEY = 'webtau:active-voicebank';
+const ACTIVE_KEY = 'openwebz:active-voicebank';
 
 export interface SavedSampleMeta {
 	path: string;

@@ -37,9 +37,9 @@
 				<Icon name="menu" />
 			</button>
 		{:else}
-			<button class="brand" onclick={() => ui.openDialog('about')} aria-label="About WebTAU">
+			<button class="brand" onclick={() => ui.openDialog('about')} aria-label="About OpenwebZ">
 				<img src={asset('favicon.png')} alt="" width="26" height="26" />
-				<span>WebTAU</span>
+				<span>OpenwebZ</span>
 			</button>
 			<button class="btn ghost" onclick={(e) => dropdown(e, fileMenu)}>File</button>
 			<button class="btn ghost" onclick={(e) => dropdown(e, editMenu)}>Edit</button>

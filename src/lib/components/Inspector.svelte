@@ -124,6 +124,16 @@
 		<h3>Tracks</h3>
 		<div class="tracks">
 			{#each project.tracks as t (t.id)}
+				{@const resolvedSingerId = t.singer
+					? (voicebank.findMeta(t.singer)?.id ??
+						(voicebank.current?.name.trim().toLowerCase() === t.singer.trim().toLowerCase()
+							? voicebank.current.id
+							: t.singer))
+					: ''}
+				{@const singerKnown =
+					!resolvedSingerId ||
+					voicebank.current?.id === resolvedSingerId ||
+					voicebank.library.some((b) => b.id === resolvedSingerId)}
 				<div class="track" class:active={t.id === project.activeTrack}>
 					<button
 						class="swatch"
@@ -177,6 +187,27 @@
 						oninput={(e) =>
 							project.updateTrack(t.id, { volume: Number(e.currentTarget.value) }, `vol-${t.id}`)}
 					/>
+					<div class="track-singer">
+						<Icon name="mic" size={14} />
+						<select
+							aria-label="{t.name} singer"
+							value={resolvedSingerId}
+							onchange={(e) => void voicebank.setTrackSinger(t.id, e.currentTarget.value)}
+						>
+							<option value="">
+								Active voicebank ({voicebank.current?.name ?? 'None'})
+							</option>
+							{#if voicebank.current && !voicebank.library.some((b) => b.id === voicebank.current?.id)}
+								<option value={voicebank.current.id}>{voicebank.current.name}</option>
+							{/if}
+							{#each voicebank.library as item (item.id)}
+								<option value={item.id}>{item.name}</option>
+							{/each}
+							{#if resolvedSingerId && !singerKnown}
+								<option value={resolvedSingerId}>{t.singer} (not loaded)</option>
+							{/if}
+						</select>
+					</div>
 				</div>
 			{/each}
 			<button class="btn" onclick={() => project.addTrack()}
@@ -452,8 +483,23 @@
 		border-color: var(--accent);
 		box-shadow: var(--glow);
 	}
-	.track .vol {
+	.track .vol,
+	.track-singer {
 		grid-column: 2 / -1;
+	}
+	.track-singer {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--muted);
+		margin-top: 2px;
+	}
+	.track-singer select {
+		flex: 1;
+		min-width: 0;
+		min-height: 28px;
+		font-size: 12px;
+		padding: 2px 8px;
 	}
 	.swatch {
 		width: var(--hit);

@@ -144,8 +144,12 @@ describe('limiter, randomly', () => {
 			const pcm = randomSignal(r, 4000);
 			const { pcm: out } = limit(pcm, 0, pcm.length);
 			for (let i = 0; i < pcm.length; i++) {
-				expect(Math.abs(out[i])).toBeLessThanOrEqual(Math.abs(pcm[i]) + 1e-6);
-				if (pcm[i] !== 0) expect(Math.sign(out[i])).toBe(Math.sign(pcm[i]));
+				if (Math.abs(out[i]) > Math.abs(pcm[i]) + 1e-6) {
+					expect(Math.abs(out[i])).toBeLessThanOrEqual(Math.abs(pcm[i]) + 1e-6);
+				}
+				if (pcm[i] !== 0 && Math.sign(out[i]) !== Math.sign(pcm[i])) {
+					expect(Math.sign(out[i])).toBe(Math.sign(pcm[i]));
+				}
 			}
 		});
 	});

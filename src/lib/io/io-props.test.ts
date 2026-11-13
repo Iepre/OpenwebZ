@@ -6,6 +6,8 @@ import { parseUst, serializeUst } from './ust';
 import { parseMidi, serializeMidi } from './midi';
 import { parseProject, serializeProject } from './project-file';
 import { parseUstx, serializeUstx } from './ustx';
+import { parseSvp, serializeSvp } from './svp';
+import { parseCevioXml, serializeCcs, serializeTssln } from './cevio';
 import { parseVsqx } from './vsqx';
 import { decodeText, encodeText } from './text';
 import { encodeWav } from './wav';
@@ -374,17 +376,18 @@ describe('project file', () => {
 	});
 
 	it('rejects what is not a project, and tolerates a project missing most fields', () => {
-		expect(() => parseProject('{}')).toThrow(/not a WebTAU/);
+		expect(() => parseProject('{}')).toThrow(/not an OpenwebZ/);
 		expect(() => parseProject('nonsense')).toThrow();
-		const p = parseProject('{"format":"webtau-project"}');
+		const p = parseProject('{"format":"openwebz-project"}');
 		expect(p.notes).toEqual([]);
 		expect(p.tracks).toHaveLength(1);
 		expect(p.tempos).toEqual([{ tick: 0, bpm: 120 }]);
+		expect(parseProject('{"format":"webtau-project"}').tracks).toHaveLength(1);
 	});
 
 	it('notes with missing or wrong-typed fields come out as usable numbers', () => {
 		const text = JSON.stringify({
-			format: 'webtau-project',
+			format: 'openwebz-project',
 			notes: [
 				{},
 				{ tick: 'abc', length: null, pitch: 'x', velocity: 'loud' },
@@ -405,7 +408,7 @@ describe('project file', () => {
 	it('a bad tempo list does not break time conversion', () => {
 		const p = parseProject(
 			JSON.stringify({
-				format: 'webtau-project',
+				format: 'openwebz-project',
 				tempos: [
 					{ tick: 0, bpm: 0 },
 					{ tick: 'x', bpm: 'fast' }
@@ -509,5 +512,80 @@ describe('VSQX and text', () => {
 		expect(v.getInt16(48, true)).toBe(-32768);
 		expect(Math.abs(v.getInt16(44, true))).toBeLessThanOrEqual(1);
 		expect(encodeWav(new Float32Array(0), 48000).length).toBe(44);
+	});
+});
+
+describe('Per-track singer round-trip', () => {
+	it('preserves distinct singers per track in OpenwebZ project, USTX, SVP, CCS and TSSLN', () => {
+		const t1 = createTrack(0, { name: 'Lead', singer: 'VoiceA' });
+		const t2 = createTrack(1, { name: 'Harmony', singer: 'VoiceB' });
+		const notes = [
+			createNote({ track: t1.id, tick: 0, length: 480, pitch: 60, lyric: 'a' }),
+			createNote({ track: t2.id, tick: 0, length: 480, pitch: 64, lyric: 'i' })
+		];
+		const tempos: TempoChange[] = [{ tick: 0, bpm: 120 }];
+		const timeSignature = { numerator: 4, denominator: 4 };
+
+		const projBack = parseProject(
+			serializeProject({
+				name: 'Duet',
+				notes,
+				tracks: [t1, t2],
+				tempos,
+				timeSignature,
+				voicebank: 'VoiceA'
+			})
+		);
+		expect(projBack.tracks.map((t) => t.singer)).toEqual(['VoiceA', 'VoiceB']);
+
+		const ustxBack = parseUstx(
+			serializeUstx({
+				name: 'Duet',
+				voicebank: 'VoiceA',
+				notes,
+				tracks: [t1, t2],
+				tempos,
+				timeSignature
+			}).text
+		);
+		expect(ustxBack.tracks.map((t) => t.singer)).toEqual(['VoiceA', 'VoiceB']);
+
+		const svpBack = parseSvp(
+			serializeSvp({
+				name: 'Duet',
+				voicebank: 'VoiceA',
+				notes,
+				tracks: [t1, t2],
+				tempos,
+				timeSignature
+			}).text
+		);
+		expect(svpBack.tracks.map((t) => t.singer)).toEqual(['VoiceA', 'VoiceB']);
+
+		const ccsBack = parseCevioXml(
+			serializeCcs({
+				name: 'Duet',
+				voicebank: 'VoiceA',
+				notes,
+				tracks: [t1, t2],
+				tempos,
+				timeSignature
+			}).text,
+			'ccs'
+		);
+		expect(ccsBack.tracks.map((t) => t.singer)).toEqual(['VoiceA', 'VoiceB']);
+
+		const tsslnBack = parseCevioXml(
+			serializeTssln({
+				name: 'Duet',
+				voicebank: 'VoiceA',
+				notes,
+				tracks: [t1, t2],
+				tempos,
+				timeSignature
+			}).text,
+			'tssln'
+		);
+		expect(tsslnBack.tracks.map((t) => t.singer)).toEqual(['VoiceA', 'VoiceB']);
 	});
 });

@@ -211,9 +211,14 @@ export function parseUstx(input: Uint8Array | string): UstxImport {
 	const rawTracks = arr(raw.tracks).filter(isObj);
 	const tracks: Track[] = (rawTracks.length ? rawTracks : [{}]).map((t, i) => {
 		const color = OPENUTAU_COLORS.find(([name]) => name === t.track_color)?.[1];
+		const singerName =
+			typeof t.singer === 'string' && t.singer.trim()
+				? (t.singer.split(/[\\/]/).filter(Boolean).pop() ?? '').trim()
+				: '';
 		return createTrack(i, {
 			name: typeof t.track_name === 'string' && t.track_name ? t.track_name : `Track ${i + 1}`,
 			...(color ? { color } : {}),
+			...(singerName ? { singer: singerName } : {}),
 			mute: t.mute === true,
 			solo: t.solo === true,
 			volume: dbToPercent(num(t.volume, 0))
@@ -354,11 +359,11 @@ export function parseUstx(input: Uint8Array | string): UstxImport {
 		warnings.push(`${extensions} “+” continuation note(s) repeat the previous lyric.`);
 	if (ignoredExpressions.size)
 		warnings.push(
-			`Expressions without a WebTAU equivalent were skipped: ${[...ignoredExpressions].join(', ')}.`
+			`Expressions without an OpenwebZ equivalent were skipped: ${[...ignoredExpressions].join(', ')}.`
 		);
 	if (ignoredCurves.size)
 		warnings.push(
-			`Curves without a WebTAU equivalent were skipped: ${[...ignoredCurves].join(', ')}.`
+			`Curves without an OpenwebZ equivalent were skipped: ${[...ignoredCurves].join(', ')}.`
 		);
 	if (unsupported) warnings.push('Vibrato drift / volume link are not supported and were skipped.');
 	if (tuned) warnings.push('Per-note tuning offsets are not supported and were skipped.');
@@ -543,7 +548,7 @@ export function serializeUstx(input: UstxExportInput): { text: string; warnings:
 		],
 		key: 0,
 		tracks: input.tracks.map((t) => ({
-			singer: input.voicebank,
+			singer: t.singer || input.voicebank,
 			phonemizer: 'OpenUtau.Core.DefaultPhonemizer',
 			track_name: t.name,
 			track_color: colorName(t.color),

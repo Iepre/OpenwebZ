@@ -33,6 +33,7 @@ import { playback } from './playback.svelte';
 import { project } from './project.svelte';
 import { settings } from './settings.svelte';
 import { ui } from './ui.svelte';
+import { voicebank } from './voicebank.svelte';
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -96,7 +97,7 @@ export const file = {
 	save: guard(() => {
 		downloadBlob(
 			serializeProject(project.toData()),
-			`${safeFilename(project.name)}.webtau.json`,
+			`${safeFilename(project.name)}.openwebz.json`,
 			'application/json'
 		);
 		project.dirty = false;
@@ -104,7 +105,7 @@ export const file = {
 	}),
 
 	open: guard(async () => {
-		const [f] = await pickFiles('.json,.webtau,application/json');
+		const [f] = await pickFiles('.json,.openwebz,.webtau,application/json');
 		if (f) await file.openProject(f);
 	}),
 
@@ -174,7 +175,9 @@ export const file = {
 			name: project.name,
 			voicebank: project.voicebankName,
 			notes: project.notes,
-			tracks: project.tracks,
+			tracks: project.tracks.map((t) =>
+				t.singer ? { ...t, singer: voicebank.singerLabel(t.singer) } : t
+			),
 			tempos: project.tempos,
 			timeSignature: project.timeSignature
 		});
@@ -191,7 +194,7 @@ export const file = {
 		const notes = bakeCurve(own, track, project.tempoMap);
 		const { text, warnings } = serializeUst(notes, project.tempos, {
 			name: project.name,
-			voicebank: project.voicebankName
+			voicebank: track.singer ? voicebank.singerLabel(track.singer) : project.voicebankName
 		});
 		downloadBlob(text, `${safeFilename(project.name)}.ust`, 'text/plain;charset=utf-8');
 		ui.toast(
@@ -298,7 +301,9 @@ export const file = {
 			name: project.name,
 			voicebank: project.voicebankName,
 			notes: project.notes,
-			tracks: project.tracks,
+			tracks: project.tracks.map((t) =>
+				t.singer ? { ...t, singer: voicebank.singerLabel(t.singer) } : t
+			),
 			tempos: project.tempos,
 			timeSignature: project.timeSignature
 		});
@@ -338,7 +343,9 @@ export const file = {
 			name: project.name,
 			voicebank: project.voicebankName,
 			notes: project.notes,
-			tracks: project.tracks,
+			tracks: project.tracks.map((t) =>
+				t.singer ? { ...t, singer: voicebank.singerLabel(t.singer) } : t
+			),
 			tempos: project.tempos,
 			timeSignature: project.timeSignature
 		});
@@ -378,7 +385,9 @@ export const file = {
 			name: project.name,
 			voicebank: project.voicebankName,
 			notes: project.notes,
-			tracks: project.tracks,
+			tracks: project.tracks.map((t) =>
+				t.singer ? { ...t, singer: voicebank.singerLabel(t.singer) } : t
+			),
 			tempos: project.tempos,
 			timeSignature: project.timeSignature
 		});
@@ -516,7 +525,7 @@ formats
 	})
 	.register({
 		id: 'project',
-		extensions: ['.json', '.webtau'],
+		extensions: ['.json', '.openwebz', '.webtau'],
 		openFile: file.openProject
 	});
 

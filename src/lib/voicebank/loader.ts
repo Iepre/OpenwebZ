@@ -261,6 +261,46 @@ export async function loadFromEntry(entry: FileSystemEntry, status: StatusFn): P
 	return buildAnyVoicebank(entriesFromFiles(files), entry.name, entry.name, status);
 }
 
+/** Downloads a .zip voicebank from a direct URL (CORS-enabled) and parses it. */
+export async function loadVoicebankFromUrl(url: string, status: StatusFn): Promise<Voicebank> {
+	const trimmed = url.trim();
+	if (!trimmed) throw new Error('Enter a voicebank .zip URL first.');
+
+	let parsed: URL;
+	try {
+		parsed = new URL(trimmed);
+	} catch {
+		throw new Error('The URL is not valid.');
+	}
+	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+		throw new Error('Only http:// and https:// URLs are supported.');
+	}
+
+	status(`Downloading ${parsed.pathname.split('/').pop() || 'voicebank.zip'}…`);
+	let response: Response;
+	try {
+		response = await fetch(parsed.toString());
+	} catch {
+		throw new Error(
+			'Download failed (network error or server does not allow browser CORS requests).'
+		);
+	}
+	if (!response.ok) {
+		throw new Error(`Download failed with HTTP ${response.status}.`);
+	}
+
+	const bytes = new Uint8Array(await response.arrayBuffer());
+	if (bytes.byteLength < 30 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+		throw new Error('The downloaded file is not a valid .zip voicebank archive.');
+	}
+
+	const rawName = decodeURIComponent(parsed.pathname.split('/').pop() || 'voicebank.zip');
+	const fileName = rawName.toLowerCase().endsWith('.zip') ? rawName : `${rawName}.zip`;
+	const zipFile = new File([bytes], fileName, { type: 'application/zip' });
+	await JSZip.loadAsync(bytes);
+	return loadFromFileList([zipFile], status);
+}
+
 // The classic UTAU voicebank: oto.ini (or file names) and WAV samples.
 registerVoicebankLoader({
 	id: 'utau',

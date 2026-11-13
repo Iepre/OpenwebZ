@@ -14,7 +14,7 @@ import {
 } from '#lib/core/types';
 import { decodeText } from './text';
 
-/** Synthesizer V Studio uses 705,600,000 blicks per quarter note (480 ticks in WebTAU). */
+/** Synthesizer V Studio uses 705,600,000 blicks per quarter note (480 ticks in OpenwebZ). */
 export const BLICKS_PER_QUARTER = 705_600_000;
 
 export interface SvpImport {
@@ -237,18 +237,20 @@ export function parseSvp(input: Uint8Array | string): SvpImport {
 
 	rawTracks.forEach((rt, idx) => {
 		const mixer = isObj(rt.mixer) ? rt.mixer : {};
+		const mainRef = isObj(rt.mainRef) ? rt.mainRef : {};
+		const db = isObj(mainRef.database) ? mainRef.database : null;
+		const singerName = db && typeof db.name === 'string' ? db.name.trim() : '';
 		const track = createTrack(idx, {
 			name: typeof rt.name === 'string' && rt.name.trim() ? rt.name.trim() : `Track ${idx + 1}`,
 			color: normalizeColor(rt.dispColor, TRACK_COLORS[idx % TRACK_COLORS.length]),
+			...(singerName ? { singer: singerName } : {}),
 			mute: mixer.mute === true,
 			solo: mixer.solo === true,
 			volume: dbToPercent(num(mixer.gainDecibel, 0))
 		});
 
-		const mainRef = isObj(rt.mainRef) ? rt.mainRef : {};
-		const db = isObj(mainRef.database) ? mainRef.database : null;
-		if (!voicebank && db && typeof db.name === 'string' && db.name.trim()) {
-			voicebank = db.name.trim();
+		if (!voicebank && singerName) {
+			voicebank = singerName;
 		}
 
 		const trackNotes: Note[] = [];
@@ -341,7 +343,7 @@ export function serializeSvp(input: SvpExportInput): { text: string; warnings: s
 			}
 		}
 
-		const uuid = `webtau-track-${idx + 1}`;
+		const uuid = `openwebz-track-${idx + 1}`;
 		return {
 			name: track.name,
 			dispColor: track.color,
@@ -375,7 +377,7 @@ export function serializeSvp(input: SvpExportInput): { text: string; warnings: s
 				pitchOffset: 0,
 				isInstrumental: false,
 				database: {
-					name: input.voicebank || '',
+					name: track.singer || input.voicebank || '',
 					language: 'japanese',
 					phoneset: 'romaji',
 					backendType: 'SVR2'

@@ -49,6 +49,8 @@ export interface Track {
 	volume: number;
 	/** Id of the renderer backend that sings this track (see src/lib/render). */
 	renderer: string;
+	/** Optional remembered voicebank id or singer name assigned to this track. */
+	singer?: string;
 	/**
 	 * Pitch drawn across the whole track (the "track" pitch mode). Where a stroke
 	 * covers a note, the note follows the stroke instead of its own pitch.

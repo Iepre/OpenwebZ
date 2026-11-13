@@ -178,9 +178,19 @@
 	</div>
 
 	{#if !ui.compact}
-		<button class="btn track-chip" title="Tracks: switch, add, mute, solo" onclick={openTracks}>
+		{@const activeSinger = activeTrack?.singer ? voicebank.singerLabel(activeTrack.singer) : ''}
+		<button
+			class="btn track-chip"
+			title={activeSinger
+				? `Tracks: ${activeTrack?.name} (${activeSinger})`
+				: 'Tracks: switch, add, mute, solo, singer'}
+			onclick={openTracks}
+		>
 			<span class="swatch" style:background={activeTrack?.color}></span>
-			{activeTrack?.name}
+			<span class="track-name">{activeTrack?.name}</span>
+			{#if activeSinger}
+				<span class="singer-tag">· {activeSinger}</span>
+			{/if}
 			<Icon name="chevronDown" size={14} />
 		</button>
 		<div class="group">
@@ -306,7 +316,21 @@
 		min-height: 36px;
 		padding: 0 12px;
 		border-radius: 12px;
-		max-width: 180px;
+		max-width: 240px;
+	}
+	.track-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.singer-tag {
+		color: var(--muted);
+		font-size: 12px;
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 90px;
 	}
 	.swatch {
 		width: 10px;

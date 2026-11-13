@@ -1,6 +1,6 @@
-# WebTAU architecture
+# OpenwebZ architecture
 
-WebTAU is a browser-based UTAU-style vocal editor: SvelteKit 3 / Svelte 5 on the front, a Rust → WebAssembly
+OpenwebZ is a browser-based UTAU-style vocal editor: SvelteKit 3 / Svelte 5 on the front, a Rust → WebAssembly
 WORLD engine behind workers for synthesis. This page explains how the code is layered, where it can be
 extended without touching the core, and what a new kind of voice (for example a neural one) would have to add.
 
@@ -156,7 +156,7 @@ Playback is not peak-normalised any more (the whole song is not known yet), it i
 ## How this compares with OpenUtau
 
 OpenUtau's phonemizers turn lyrics into phonemes inside the renderer pipeline, language by language, with
-`[hint]`, `+` and `prefix.map` handling spread over them. WebTAU keeps those ideas but separates concerns:
+`[hint]`, `+` and `prefix.map` handling spread over them. OpenwebZ keeps those ideas but separates concerns:
 
 - the **grammar** (rest, continuation, hint) is one small module shared by every language;
 - **spelling bridges** work on a voicebank-derived index instead of per-language tables, so they work for any

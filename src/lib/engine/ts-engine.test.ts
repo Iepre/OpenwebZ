@@ -191,4 +191,137 @@ describe('TsEngineInstance session & streaming pipeline', () => {
 
 		expect(engine.endStream(true)).toBe(true);
 	});
+
+	it('sings accurate musical MIDI pitches across octaves regardless of source sample F0', () => {
+		const makeFormantVowelWav = (f0Hz: number, durationSec: number): Uint8Array<ArrayBuffer> => {
+			const numSamples = Math.round(SAMPLE_RATE * durationSec);
+			const buf = new ArrayBuffer(44 + numSamples * 2);
+			const view = new DataView(buf);
+			const writeStr = (offset: number, s: string) => {
+				for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+			};
+			writeStr(0, 'RIFF');
+			view.setUint32(4, 36 + numSamples * 2, true);
+			writeStr(8, 'WAVE');
+			writeStr(12, 'fmt ');
+			view.setUint32(16, 16, true);
+			view.setUint16(20, 1, true);
+			view.setUint16(22, 1, true);
+			view.setUint32(24, SAMPLE_RATE, true);
+			view.setUint32(28, SAMPLE_RATE * 2, true);
+			view.setUint16(32, 2, true);
+			view.setUint16(34, 16, true);
+			writeStr(36, 'data');
+			view.setUint32(40, numSamples * 2, true);
+			for (let i = 0; i < numSamples; i++) {
+				const t = i / SAMPLE_RATE;
+				let v = 0;
+				for (let h = 1; h <= 16; h++) {
+					const f = f0Hz * h;
+					const g1 = Math.exp(-0.5 * ((f - 730) / 120) ** 2);
+					const g2 = Math.exp(-0.5 * ((f - 1090) / 140) ** 2);
+					const g3 = Math.exp(-0.5 * ((f - 2440) / 200) ** 2);
+					v += (0.25 / h + 0.8 * g1 + 0.6 * g2 + 0.25 * g3) * Math.sin(2 * Math.PI * f * t);
+				}
+				view.setInt16(44 + i * 2, Math.round(Math.max(-1, Math.min(1, v * 0.28)) * 32767), true);
+			}
+			return new Uint8Array(buf);
+		};
+
+		const estimateF0 = (pcm: Float32Array, from: number, to: number): number => {
+			const minLag = Math.floor(SAMPLE_RATE / 700);
+			const maxLag = Math.ceil(SAMPLE_RATE / 90);
+			const cmpLen = Math.min(1024, to - from - maxLag);
+			const normDiffs = new Float64Array(maxLag + 1);
+			for (let lag = minLag; lag <= maxLag; lag++) {
+				let diff = 0;
+				let energy = 0;
+				for (let i = 0; i < cmpLen; i++) {
+					const a = pcm[from + i];
+					const b = pcm[from + i + lag];
+					diff += (a - b) * (a - b);
+					energy += a * a + b * b;
+				}
+				normDiffs[lag] = energy > 0 ? diff / energy : 1;
+			}
+			// Pick the first local minimum below threshold so 2x/3x subharmonic lags do not win.
+			let bestLag = 0;
+			let bestVal = Infinity;
+			for (let lag = minLag; lag <= maxLag; lag++) {
+				if (normDiffs[lag] < 0.08) {
+					while (lag + 1 <= maxLag && normDiffs[lag + 1] < normDiffs[lag]) lag++;
+					bestLag = lag;
+					break;
+				}
+				if (normDiffs[lag] < bestVal) {
+					bestVal = normDiffs[lag];
+					bestLag = lag;
+				}
+			}
+			return bestLag > 0 ? SAMPLE_RATE / bestLag : 0;
+		};
+
+		const engine = setupEngine(); // source sample is 220 Hz (A3)
+		for (const [midi, expectedHz] of [
+			[48, 130.81], // C3
+			[60, 261.63], // C4
+			[67, 392.0], // G4
+			[72, 523.25] // C5
+		] as const) {
+			const res = engine.renderOneshot(
+				[
+					{
+						start_time: 0,
+						duration: 500,
+						pitch: midi,
+						alias: 'a',
+						flags: '',
+						velocity: 100,
+						volume: 100,
+						modulation: 0,
+						pitchbend: []
+					}
+				],
+				120
+			);
+			expect(res).not.toBeNull();
+			const measured = estimateF0(res!.pcm, 4410, 13230);
+			expect(Math.abs(measured - expectedHz) / expectedHz).toBeLessThan(0.03);
+		}
+
+		// Multi-harmonic vocal tract vowel /a/ should sing across octaves without clipping.
+		const vowelFeat = analyzeWavBytes(makeFormantVowelWav(220, 0.6), 0);
+		expect(vowelFeat).not.toBeNull();
+		expect(engine.cacheFeatures('a.wav', vowelFeat!)).toBe(true);
+		for (const [midi, expectedHz] of [
+			[48, 130.81],
+			[60, 261.63],
+			[67, 392.0],
+			[72, 523.25]
+		] as const) {
+			const res = engine.renderOneshot(
+				[
+					{
+						start_time: 0,
+						duration: 500,
+						pitch: midi,
+						alias: 'a',
+						flags: '',
+						velocity: 100,
+						volume: 100,
+						modulation: 0,
+						pitchbend: []
+					}
+				],
+				120
+			);
+			expect(res).not.toBeNull();
+			let peak = 0;
+			for (let i = 0; i < res!.pcm.length; i++) peak = Math.max(peak, Math.abs(res!.pcm[i]));
+			expect(peak).toBeGreaterThan(0.15);
+			expect(peak).toBeLessThanOrEqual(0.99);
+			const measured = estimateF0(res!.pcm, 4410, 13230);
+			expect(Math.abs(measured - expectedHz) / expectedHz).toBeLessThan(0.03);
+		}
+	});
 });
